@@ -65,7 +65,8 @@ def print_warning(msg: str) -> None:
 
 def print_error(msg: str) -> None:
     if _RICH:
-        console.print(f"[bold red]✘[/bold red]  {msg}", file=sys.stderr)
+        err_console = Console(stderr=True)
+        err_console.print(f"[bold red]✘[/bold red]  {msg}")
     else:
         print(f"[ERROR] {msg}", file=sys.stderr)
 

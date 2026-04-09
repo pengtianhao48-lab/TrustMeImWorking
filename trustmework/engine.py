@@ -121,18 +121,37 @@ def _work_segments(work_start: datetime.time, work_end: datetime.time):
     """
     Split the workday into three segments, inferring lunch and dinner breaks.
     Returns list of (start, end, weight).
+    Handles short workdays gracefully: if span < 150 min, skip break inference
+    and treat the whole period as a single segment.
     """
     s = work_start.hour * 60 + work_start.minute
     e = work_end.hour * 60 + work_end.minute
+    # Handle overnight shifts (e.g. 22:00 ~ 06:00)
+    if e <= s:
+        e += 24 * 60
     span = e - s
+
+    def m2t(m):
+        return datetime.time(m // 60 % 24, m % 60)
+
+    # Need at least 150 min to fit lunch (60 min) + dinner (45 min) without overlap
+    if span < 150:
+        print_info("Work span < 2.5 hours — skipping break inference, treating as single segment.")
+        return [(work_start, work_end, 1.0)]
 
     lunch_s = s + int(span * 0.45)
     lunch_e = lunch_s + 60
     dinner_s = e - 90
     dinner_e = dinner_s + 45
 
-    def m2t(m):
-        return datetime.time(m // 60 % 24, m % 60)
+    # Safety check: if lunch_e overlaps dinner_s, collapse to two segments (no dinner break)
+    if lunch_e >= dinner_s:
+        print_info(f"Inferred lunch  {m2t(lunch_s).strftime('%H:%M')} – {m2t(lunch_e).strftime('%H:%M')}")
+        print_info("Work span too short for dinner break — using two segments only.")
+        return [
+            (work_start,    m2t(lunch_s),  0.45),
+            (m2t(lunch_e),  work_end,       0.55),
+        ]
 
     print_info(f"Inferred lunch  {m2t(lunch_s).strftime('%H:%M')} – {m2t(lunch_e).strftime('%H:%M')}")
     print_info(f"Inferred dinner {m2t(dinner_s).strftime('%H:%M')} – {m2t(dinner_e).strftime('%H:%M')}")
