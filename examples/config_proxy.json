@@ -1,0 +1,14 @@
+{
+  "_readme": "Custom proxy / self-hosted endpoint example",
+  "platform": "custom",
+  "api_key": "sk-YOUR-API-KEY",
+  "base_url": "https://your-openai-proxy.example.com/v1",
+  "model": "gpt-4o-mini",
+  "weekly_min": 40000,
+  "weekly_max": 70000,
+  "simulate_work": true,
+  "job_description": "Data analyst working with SQL, Python, and business intelligence dashboards",
+  "work_start": "10:00",
+  "work_end": "19:00",
+  "timezone": "Asia/Shanghai"
+}

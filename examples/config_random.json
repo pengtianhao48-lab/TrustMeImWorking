@@ -1,0 +1,11 @@
+{
+  "_readme": "Random mode — spreads token usage evenly throughout the day",
+  "platform": "openai",
+  "api_key": "sk-YOUR-API-KEY",
+  "base_url": null,
+  "model": null,
+  "weekly_min": 50000,
+  "weekly_max": 80000,
+  "simulate_work": false,
+  "timezone": "Asia/Shanghai"
+}
