@@ -3,7 +3,7 @@
 TrustMeImWorking — CLI entry point.
 
 Usage:
-  tmw init   [--config PATH] [--mode random|work]
+  tmw init   [--config PATH] [--mode random|work|gateway|proxy]
   tmw run    --config PATH   [--dry-run]
   tmw status --config PATH
   tmw scheduler --install   --config PATH
@@ -164,7 +164,8 @@ Examples:
     # init
     p_init = sub.add_parser("init", help="Generate a config file template")
     p_init.add_argument("--config", "-c", default="config.json", metavar="PATH")
-    p_init.add_argument("--mode", choices=["random", "work"], default="random")
+    p_init.add_argument("--mode", choices=["random", "work", "gateway", "proxy"], default="random",
+                         help="Template mode: random, work, gateway (enterprise gateway), proxy (HTTP proxy + mTLS)")
 
     # run
     p_run = sub.add_parser("run", help="Run a consumption session")

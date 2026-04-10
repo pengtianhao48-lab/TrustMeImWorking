@@ -1,12 +1,22 @@
 """
 Core consumption engine — handles both Random and Work-Simulation modes.
+
+Enterprise gateway support:
+  - extra_headers   : inject arbitrary HTTP headers into every request
+  - http_proxy      : route traffic through an HTTP/HTTPS/SOCKS5 proxy
+  - token_field     : configurable dot-path or header for token count extraction
+  - jwt_helper      : shell command to fetch a fresh JWT/Bearer token
+  - mtls_cert/key   : client certificate for mutual TLS
+  - mtls_ca         : custom CA bundle for server certificate verification
 """
 
 from __future__ import annotations
 
 import datetime
 import random
+import subprocess
 import time
+from typing import Any
 
 from . import state as st
 from .display import (
@@ -64,8 +74,157 @@ Requirements:
 Questions:"""
 
 
+# ── JWT token cache ───────────────────────────────────────────────────────────
+
+_jwt_cache: dict[str, Any] = {"token": None, "fetched_at": 0.0}
+
+
+def _fetch_jwt(helper_cmd: str) -> str:
+    """Run the JWT helper command and return the token string."""
+    try:
+        result = subprocess.run(
+            helper_cmd, shell=True, capture_output=True, text=True, timeout=15
+        )
+        token = result.stdout.strip()
+        if not token:
+            raise RuntimeError(f"JWT helper returned empty output. stderr: {result.stderr.strip()}")
+        return token
+    except subprocess.TimeoutExpired:
+        raise RuntimeError(f"JWT helper timed out after 15 seconds: {helper_cmd}")
+
+
+def _resolve_api_key(config: dict) -> str:
+    """
+    Resolve the effective API key.
+    If jwt_helper is set, run it (with TTL caching) and use its output.
+    Otherwise, return config['api_key'].
+    """
+    helper = config.get("jwt_helper")
+    if not helper:
+        return config["api_key"]
+
+    ttl = int(config.get("jwt_ttl_seconds", 3600))
+    now = time.time()
+    if _jwt_cache["token"] is None or (now - _jwt_cache["fetched_at"]) >= ttl:
+        print_info(f"Refreshing JWT token via helper: {helper}")
+        _jwt_cache["token"] = _fetch_jwt(helper)
+        _jwt_cache["fetched_at"] = now
+        print_info("JWT token refreshed.")
+    return _jwt_cache["token"]
+
+
+# ── Token field extraction ────────────────────────────────────────────────────
+
+def _extract_tokens(resp, token_field: str | None, response_headers: dict | None = None) -> int:
+    """
+    Extract token count from an API response.
+
+    token_field formats:
+      None / ""                    → resp.usage.total_tokens  (default)
+      "usage.total_tokens"         → resp.usage.total_tokens
+      "usage.prompt_tokens+usage.completion_tokens"  → sum of two fields
+      "header:X-Tokens-Used"       → read from response header
+    """
+    if not token_field:
+        # Default: standard OpenAI usage object
+        try:
+            return resp.usage.total_tokens if resp.usage else 0
+        except AttributeError:
+            return 0
+
+    tf = token_field.strip()
+
+    # Header-based extraction
+    if tf.startswith("header:"):
+        header_name = tf[len("header:"):].strip()
+        if response_headers and header_name in response_headers:
+            try:
+                return int(response_headers[header_name])
+            except (ValueError, TypeError):
+                print_warning(f"Could not parse header '{header_name}' as int.")
+                return 0
+        print_warning(f"Header '{header_name}' not found in response headers.")
+        return 0
+
+    # Sum of two dot-path fields: "a.b+c.d"
+    if "+" in tf:
+        parts = [p.strip() for p in tf.split("+")]
+        total = 0
+        for part in parts:
+            total += _get_nested(resp, part)
+        return total
+
+    # Single dot-path field
+    return _get_nested(resp, tf)
+
+
+def _get_nested(obj: Any, dot_path: str) -> int:
+    """Traverse a dot-path like 'usage.total_tokens' on an object or dict."""
+    parts = dot_path.split(".")
+    cur = obj
+    for part in parts:
+        if cur is None:
+            return 0
+        if isinstance(cur, dict):
+            cur = cur.get(part)
+        else:
+            cur = getattr(cur, part, None)
+    try:
+        return int(cur) if cur is not None else 0
+    except (ValueError, TypeError):
+        return 0
+
+
+# ── HTTP client builder ───────────────────────────────────────────────────────
+
+def _build_http_client(config: dict):
+    """
+    Build an httpx.Client with proxy, mTLS, and custom CA support.
+    Returns None if no special transport is needed (fall back to openai default).
+    """
+    needs_custom = any([
+        config.get("http_proxy"),
+        config.get("mtls_cert"),
+        config.get("mtls_ca"),
+    ])
+    if not needs_custom:
+        return None
+
+    try:
+        import httpx
+    except ImportError:
+        import subprocess, sys
+        subprocess.run([sys.executable, "-m", "pip", "install", "httpx", "-q"], check=True)
+        import httpx
+
+    kwargs: dict[str, Any] = {}
+
+    # HTTP / SOCKS5 proxy
+    proxy = config.get("http_proxy")
+    if proxy:
+        kwargs["proxy"] = proxy
+        print_info(f"Using HTTP proxy: {proxy}")
+
+    # mTLS client certificate
+    cert_path = config.get("mtls_cert")
+    key_path  = config.get("mtls_key")
+    ca_path   = config.get("mtls_ca")
+
+    if cert_path and key_path:
+        kwargs["cert"] = (cert_path, key_path)
+        print_info(f"Using mTLS client cert: {cert_path}")
+
+    if ca_path:
+        kwargs["verify"] = ca_path
+        print_info(f"Using custom CA bundle: {ca_path}")
+    else:
+        kwargs.setdefault("verify", True)
+
+    return httpx.Client(**kwargs)
+
+
 def _build_client(config: dict):
-    """Build an OpenAI-compatible client from config."""
+    """Build an OpenAI-compatible client from config, with full gateway support."""
     try:
         from openai import OpenAI
     except ImportError:
@@ -75,10 +234,32 @@ def _build_client(config: dict):
 
     platform = config.get("platform", "custom").lower()
     base_url = get_base_url(platform, config.get("base_url"))
-    return OpenAI(api_key=config["api_key"], base_url=base_url)
+    api_key  = _resolve_api_key(config)
+
+    # Build extra default headers
+    default_headers: dict[str, str] = {}
+    extra = config.get("extra_headers")
+    if extra and isinstance(extra, dict):
+        default_headers.update({str(k): str(v) for k, v in extra.items()})
+        print_info(f"Injecting {len(extra)} custom header(s): {list(extra.keys())}")
+
+    # Build custom httpx client if needed
+    http_client = _build_http_client(config)
+
+    openai_kwargs: dict[str, Any] = {
+        "api_key": api_key,
+        "base_url": base_url,
+        "default_headers": default_headers,
+    }
+    if http_client is not None:
+        openai_kwargs["http_client"] = http_client
+
+    return OpenAI(**openai_kwargs)
 
 
-def _call_api(client, model: str, prompt: str) -> int:
+# ── API call ──────────────────────────────────────────────────────────────────
+
+def _call_api(client, model: str, prompt: str, token_field: str | None = None) -> int:
     """Make one API call, return tokens consumed (0 on error)."""
     try:
         resp = client.chat.completions.create(
@@ -86,11 +267,22 @@ def _call_api(client, model: str, prompt: str) -> int:
             messages=[{"role": "user", "content": prompt}],
             max_tokens=512,
         )
-        return resp.usage.total_tokens if resp.usage else 0
+        # Try to get response headers for header-based token extraction
+        response_headers: dict | None = None
+        if token_field and token_field.startswith("header:"):
+            # The openai SDK wraps the raw response; attempt to access it
+            try:
+                response_headers = dict(resp._raw_response.headers)  # type: ignore[attr-defined]
+            except AttributeError:
+                response_headers = None
+
+        return _extract_tokens(resp, token_field, response_headers)
     except Exception as exc:
         print_error(f"API call failed: {exc}")
         return 0
 
+
+# ── Timezone helper ───────────────────────────────────────────────────────────
 
 def _resolve_tz(config: dict):
     """Resolve timezone from config, fall back to local."""
@@ -170,7 +362,7 @@ def _current_segment(now_time: datetime.time, segments):
     return None
 
 
-def _generate_work_prompts(client, model: str, job_desc: str) -> list[str]:
+def _generate_work_prompts(client, model: str, job_desc: str, token_field: str | None = None) -> list[str]:
     """Ask the LLM to generate job-relevant prompts."""
     meta = _WORK_PROMPT_TEMPLATE.format(job_description=job_desc)
     try:
@@ -196,6 +388,7 @@ def run_random_mode(config: dict, config_path: str, dry_run: bool = False) -> No
     """
     tz = _resolve_tz(config)
     state = st.load(config_path)
+    token_field = config.get("token_field") or None
 
     weekly_target = random.randint(config["weekly_min"], config["weekly_max"])
     daily_tgt = _daily_target(weekly_target, 7)
@@ -215,6 +408,8 @@ def run_random_mode(config: dict, config_path: str, dry_run: bool = False) -> No
     client = _build_client(config)
     model = config.get("model") or get_default_model(config.get("platform", "openai"))
     print_info(f"Using model: {model}")
+    if token_field:
+        print_info(f"Token field: {token_field}")
 
     total = 0
     prompts = RANDOM_PROMPTS.copy()
@@ -224,7 +419,7 @@ def run_random_mode(config: dict, config_path: str, dry_run: bool = False) -> No
     for prompt in pool:
         if total >= remaining:
             break
-        tokens = _call_api(client, model, prompt)
+        tokens = _call_api(client, model, prompt, token_field)
         if tokens:
             total += tokens
             st.record(config_path, state, tokens, tz)
@@ -243,6 +438,7 @@ def run_work_mode(config: dict, config_path: str, dry_run: bool = False) -> None
     """
     tz = _resolve_tz(config)
     state = st.load(config_path)
+    token_field = config.get("token_field") or None
 
     weekly_target = random.randint(config["weekly_min"], config["weekly_max"])
     daily_tgt = _daily_target(weekly_target, 5)
@@ -286,9 +482,11 @@ def run_work_mode(config: dict, config_path: str, dry_run: bool = False) -> None
     client = _build_client(config)
     model = config.get("model") or get_default_model(config.get("platform", "openai"))
     print_info(f"Using model: {model}")
+    if token_field:
+        print_info(f"Token field: {token_field}")
 
     print_info("Generating work-relevant prompts…")
-    work_prompts = _generate_work_prompts(client, model, job_desc)
+    work_prompts = _generate_work_prompts(client, model, job_desc, token_field)
     print_success(f"Generated {len(work_prompts)} prompts for '{job_desc}'")
 
     pool = (work_prompts * 20)
@@ -298,7 +496,7 @@ def run_work_mode(config: dict, config_path: str, dry_run: bool = False) -> None
     for prompt in pool:
         if total >= seg_tgt:
             break
-        tokens = _call_api(client, model, prompt)
+        tokens = _call_api(client, model, prompt, token_field)
         if tokens:
             total += tokens
             st.record(config_path, state, tokens, tz)

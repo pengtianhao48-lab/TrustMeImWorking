@@ -1,0 +1,37 @@
+{
+  "_readme": "TrustMeImWorking — Enterprise Gateway Example",
+  "_doc": "Use this template when your company routes LLM traffic through an internal gateway (e.g. LiteLLM, One API, Kong, Azure APIM).",
+
+  "platform": "custom",
+  "api_key": "YOUR-GATEWAY-ISSUED-KEY",
+  "base_url": "https://ai-gateway.corp.com/v1",
+  "model": "gpt-4o-mini",
+
+  "weekly_min": 50000,
+  "weekly_max": 80000,
+  "simulate_work": false,
+  "timezone": "Asia/Shanghai",
+
+  "_gateway_section": "── Extra headers required by your gateway ──",
+  "extra_headers": {
+    "X-Team-ID": "engineering",
+    "X-Project-ID": "ai-productivity",
+    "X-User-Email": "you@company.com"
+  },
+
+  "http_proxy": null,
+
+  "_token_field_examples": [
+    "usage.total_tokens          (default, standard OpenAI format)",
+    "usage.prompt_tokens+usage.completion_tokens  (sum two fields)",
+    "header:X-Tokens-Used        (read from a response header)"
+  ],
+  "token_field": "usage.total_tokens",
+
+  "jwt_helper": null,
+  "jwt_ttl_seconds": 3600,
+
+  "mtls_cert": null,
+  "mtls_key": null,
+  "mtls_ca": null
+}
