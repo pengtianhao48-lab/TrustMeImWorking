@@ -147,29 +147,68 @@ def run_wizard() -> None:
     )
 
     # ── Step 3: Base URL / Third-party relay ─────────────────────────────────
-    _section("Step 3: API Base URL")
+    _section("Step 3: API Base URL / Third-party Relay")
     base_url = None
 
+    _RELAY_HELP = """
+  What is a "third-party relay"?
+  ─────────────────────────────────────────────────────────────────
+  A relay is an OpenAI-compatible proxy that forwards your requests
+  to the real LLM API. You keep your own API key; the relay just
+  changes the hostname. Common use-cases:
+
+    • Bypass regional restrictions (e.g. access OpenAI from China)
+    • Company internal gateway / cost-control proxy
+    • Multi-model aggregators (one key, many models)
+    • Self-hosted LLM servers (Ollama, LM Studio, vLLM, etc.)
+
+  How to fill in the URL:
+  ─────────────────────────────────────────────────────────────────
+  The URL must be the "base" path that ends right before "/chat/completions".
+  Almost all OpenAI-compatible relays follow the pattern:
+
+      https://<relay-host>/v1
+
+  Examples by scenario:
+
+    Scenario                       Base URL to enter
+    ─────────────────────────────  ──────────────────────────────────────────
+    OpenAI official (default)      https://api.openai.com/v1
+    api2d.com relay                https://oa.api2d.net/v1
+    openai-proxy.example.com       https://openai-proxy.example.com/v1
+    Company internal gateway       https://ai-gateway.corp.com/openai/v1
+    Ollama (local)                 http://localhost:11434/v1
+    LM Studio (local)              http://localhost:1234/v1
+    vLLM (local / cloud)           http://your-server:8000/v1
+    SiliconFlow (CN mirror)        https://api.siliconflow.cn/v1
+    Groq (fast inference)          https://api.groq.com/openai/v1
+
+  Note: The tool appends "/chat/completions" automatically.
+        Do NOT include that suffix in the URL you enter here.
+  ─────────────────────────────────────────────────────────────────"""
+
     if platform == "custom":
-        print("  You selected 'custom'. A base URL is required.")
+        print("  You selected 'custom' — a Base URL is required.")
+        print(_RELAY_HELP)
         base_url = _ask(
             "Base URL",
             required=True,
-            hint="Full URL including path, e.g. https://your-relay.com/v1",
+            hint="Must end with /v1 (or equivalent path). See examples above.",
         )
     else:
         default_url = PLATFORM_URLS.get(platform, "")
         print(f"  Default URL for {platform}: {default_url}")
         override = _ask_bool(
-            "Override the default URL? (e.g. company gateway / third-party relay)",
+            "Use a third-party relay or company gateway instead of the official URL?",
             default=False,
-            hint="Choose 'y' if you access the API through a proxy or internal gateway.",
+            hint="Choose 'y' to enter a custom base URL (relay, proxy, internal gateway).",
         )
         if override:
+            print(_RELAY_HELP)
             base_url = _ask(
-                "Custom base URL",
+                "Relay / Gateway Base URL",
                 required=True,
-                hint="e.g. https://ai-gateway.corp.com/v1  or  https://openai.proxy.example.com/v1",
+                hint="Must end with /v1 (or equivalent path). See examples above.",
             )
 
     # ── Step 4: Model ─────────────────────────────────────────────────────────
