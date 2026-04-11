@@ -324,18 +324,24 @@ def _call_api(
     model: str,
     prompt: str,
     token_field: Optional[str] = None,
+    log_fn=None,
 ) -> Tuple[int, Optional[str]]:
     """
     Make one API call.
     Returns (tokens, error_message).
     tokens=0 and error_message is set on failure.
+    log_fn: optional callable(str) for detailed per-call logging.
     """
+    import traceback
+    t0 = time.time()
     try:
         resp = client.chat.completions.create(
             model=model,
             messages=[{"role": "user", "content": prompt}],
             max_tokens=512,
         )
+        elapsed = time.time() - t0
+
         # Try to get response headers for header-based token extraction
         response_headers: Optional[dict] = None
         if token_field and token_field.startswith("header:"):
@@ -344,9 +350,43 @@ def _call_api(
             except AttributeError:
                 response_headers = None
 
-        return _extract_tokens(resp, token_field, response_headers), None
+        tokens = _extract_tokens(resp, token_field, response_headers)
+
+        # Detailed token breakdown from usage object
+        usage = getattr(resp, "usage", None)
+        if usage is not None:
+            pt = getattr(usage, "prompt_tokens", "?")     # prompt tokens
+            ct = getattr(usage, "completion_tokens", "?") # completion tokens
+            tt = getattr(usage, "total_tokens", tokens)   # total tokens
+        else:
+            pt, ct, tt = "?", "?", tokens
+
+        if log_fn:
+            log_fn(
+                f"  ✔ response  elapsed={elapsed:.2f}s  "
+                f"prompt_tk={pt}  completion_tk={ct}  total_tk={tt}"
+            )
+            # Log first 200 chars of model reply for audit
+            try:
+                reply = resp.choices[0].message.content or ""
+                preview = reply[:200].replace("\n", " ")
+                if len(reply) > 200:
+                    preview += "\u2026"
+                log_fn(f"  └ reply: {preview}")
+            except Exception:
+                pass
+
+        return tokens, None
     except Exception as exc:
-        return 0, str(exc)
+        elapsed = time.time() - t0
+        tb = traceback.format_exc().strip()
+        err_msg = f"{type(exc).__name__}: {exc}  (elapsed={elapsed:.2f}s)"
+        if log_fn:
+            log_fn(f"  ✘ API error  {err_msg}")
+            # Log full traceback for debugging
+            for line in tb.splitlines():
+                log_fn(f"    {line}")
+        return 0, err_msg
 
 
 # ── Timezone helper ───────────────────────────────────────────────────────────

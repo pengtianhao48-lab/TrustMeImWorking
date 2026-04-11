@@ -371,31 +371,45 @@ def _immediate_session(config, config_path, tz, state, token_field, model, weekl
     _r.shuffle(prompts)
     pool = prompts * ((remaining // 200) + 5)
 
+    call_num = 0
     total = 0
     for prompt in pool:
         if ds.stop_event.is_set():
             break
         if total >= remaining:
             break
+        call_num += 1
         with ds._lock:
-            ds.last_prompt = prompt[:80]
-        tokens, err = _call_api(client, model, prompt, token_field)
+            ds.last_prompt = prompt
+            ds.status_msg = ""
+            ds.sleep_until = None
+        ds.log(f"  [{call_num}] Prompt: {prompt}")
+        tokens, err = _call_api(client, model, prompt, token_field, log_fn=ds.log)
         if err:
-            ds.log(f"  API error: {err}")
+            ds.log(f"  [{call_num}] FAILED  {err}")
         elif tokens:
             total += tokens
             st.record(config_path, state, tokens, tz)
             ds.refresh_consumption()
             with ds._lock:
                 ds.session_tokens = total
-            ds.log(f"  +{tokens:,} tk  [{prompt[:50]}\u2026]  total={total:,}/{remaining:,}")
+            ds.log(f"  [{call_num}] +{tokens:,} tk  session_total={total:,}/{remaining:,}  today={ds.today_tokens:,}")
         if total < remaining and not ds.stop_event.is_set():
             sleep = _r.randint(2, 8)  # short sleep — immediate mode
+            wake = datetime.datetime.now() + datetime.timedelta(seconds=sleep)
+            with ds._lock:
+                ds.sleep_until = wake
+                ds.status_msg = i18n.t("sleeping_label", secs=sleep)
             ds.stop_event.wait(sleep)
+            with ds._lock:
+                ds.sleep_until = None
+                ds.status_msg = ""
 
     with ds._lock:
         ds.session_active = False
-    ds.log(f"Session done. +{total:,} tokens.")
+        ds.status_msg = ""
+        ds.sleep_until = None
+    ds.log(f"Session done. +{total:,} tokens.  today_total={ds.today_tokens:,}/{remaining:,}")
 
 
 def _spread_session(config, config_path, tz, state, token_field, model, weekly_target, ds: DashState):
@@ -438,24 +452,29 @@ def _spread_session(config, config_path, tz, state, token_field, model, weekly_t
     _r.shuffle(prompts)
     pool = prompts * ((remaining // 200) + 5)
 
+    call_num = 0
     total = 0
     for prompt in pool:
         if ds.stop_event.is_set():
             break
         if total >= remaining:
             break
+        call_num += 1
         with ds._lock:
-            ds.last_prompt = prompt[:80]
-        tokens, err = _call_api(client, model, prompt, token_field)
+            ds.last_prompt = prompt
+            ds.status_msg = ""
+            ds.sleep_until = None
+        ds.log(f"  [{call_num}] Prompt: {prompt}")
+        tokens, err = _call_api(client, model, prompt, token_field, log_fn=ds.log)
         if err:
-            ds.log(f"  API error: {err}")
+            ds.log(f"  [{call_num}] FAILED  {err}")
         elif tokens:
             total += tokens
             st.record(config_path, state, tokens, tz)
             ds.refresh_consumption()
             with ds._lock:
                 ds.session_tokens = total
-            ds.log(f"  +{tokens:,} tk  [{prompt[:50]}\u2026]  total={total:,}/{remaining:,}")
+            ds.log(f"  [{call_num}] +{tokens:,} tk  session_total={total:,}/{remaining:,}  today={ds.today_tokens:,}")
             # Recalculate sleep dynamically
             remaining_tokens = remaining - total
             if remaining_tokens > 0:
@@ -464,8 +483,15 @@ def _spread_session(config, config_path, tz, state, token_field, model, weekly_t
                 calls_left = max(remaining_tokens // max(tokens, 1), 1)
                 sleep_between = max(int(secs_left2 / calls_left), 5)
         if total < remaining and not ds.stop_event.is_set():
+            wake = datetime.datetime.now() + datetime.timedelta(seconds=sleep_between)
+            with ds._lock:
+                ds.sleep_until = wake
+                ds.status_msg = i18n.t("sleeping_label", secs=sleep_between)
             ds.log(f"  Sleeping {sleep_between}s\u2026")
             ds.stop_event.wait(sleep_between)
+            with ds._lock:
+                ds.sleep_until = None
+                ds.status_msg = ""
 
     with ds._lock:
         ds.session_active = False
@@ -525,28 +551,29 @@ def _work_session(config, config_path, tz, state, token_field, model, weekly_tar
     pool = (work_prompts * 20)
     _r.shuffle(pool)
 
+    call_num = 0
     total = 0
     for prompt in pool:
         if ds.stop_event.is_set():
             break
         if total >= seg_tgt:
             break
+        call_num += 1
         with ds._lock:
             ds.last_prompt = prompt  # store full prompt for dashboard
             ds.status_msg = ""
             ds.sleep_until = None
-        # Log the full prompt before calling API
-        ds.log(f"  Prompt: {prompt}")
-        tokens, err = _call_api(client, model, prompt, token_field)
+        ds.log(f"  [{call_num}] Prompt: {prompt}")
+        tokens, err = _call_api(client, model, prompt, token_field, log_fn=ds.log)
         if err:
-            ds.log(f"  API error: {err}")
+            ds.log(f"  [{call_num}] FAILED  {err}")
         elif tokens:
             total += tokens
             st.record(config_path, state, tokens, tz)
             ds.refresh_consumption()
             with ds._lock:
                 ds.session_tokens = total
-            ds.log(f"  +{tokens:,} tk  total={total:,}/{seg_tgt:,}")
+            ds.log(f"  [{call_num}] +{tokens:,} tk  session_total={total:,}/{seg_tgt:,}  today={ds.today_tokens:,}")
         if total < seg_tgt and not ds.stop_event.is_set():
             sleep = _r.randint(30, 180)
             wake = datetime.datetime.now() + datetime.timedelta(seconds=sleep)
@@ -578,6 +605,13 @@ def _daemon_thread(ds: DashState) -> None:
     mode_map = {"work": "Work-Simulation", "immediate": "Immediate", "spread": "Spread"}
     mode = mode_map.get(_mode(config), _mode(config))
     ds.log(f"Mode: {mode}")
+    # Log startup configuration summary
+    ds.log(f"Config: platform={config.get('platform','custom')}  model={config.get('model','?')}")
+    ds.log(f"Config: weekly_min={config.get('weekly_min',0):,}  weekly_max={config.get('weekly_max',0):,}")
+    base_url = config.get('base_url', '(default)')
+    ds.log(f"Config: base_url={base_url}")
+    if config.get('_demo_force_weekday'):
+        ds.log("Config: --demo flag active (forcing weekday mode)")
 
     _prev_date: Optional[datetime.date] = None
 
@@ -615,7 +649,10 @@ def _daemon_thread(ds: DashState) -> None:
                     ds.next_check_at = datetime.datetime.now() + datetime.timedelta(seconds=60)
 
         except Exception as exc:
-            ds.log(f"ERROR: {exc}")
+            import traceback as _tb
+            ds.log(f"ERROR: {type(exc).__name__}: {exc}")
+            for _line in _tb.format_exc().strip().splitlines():
+                ds.log(f"  {_line}")
 
         ds.stop_event.wait(60)
 
