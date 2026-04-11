@@ -465,11 +465,20 @@ def _build_dashboard(snap: dict, config: dict, elapsed: str) -> "Table":
 
     # ── Session status ──
     if snap["session_active"]:
-        s_pct = min(snap["session_tokens"] / max(snap["session_target"], 1), 1.0)
+        s_pct     = min(snap["session_tokens"] / max(snap["session_target"], 1), 1.0)
+        day_pct   = min(today / max(daily_tgt, 1), 1.0)
+        day_color = "green" if day_pct >= 1.0 else "cyan"
         sess_text = (
+            # Row 1: session progress
             f"[yellow]● ACTIVE[/yellow]  "
-            f"{snap['session_tokens']:,} / {snap['session_target']:,}  ({s_pct:.0%})\n"
+            f"This session: [yellow]{snap['session_tokens']:,}[/yellow] / {snap['session_target']:,}  "
+            f"({s_pct:.0%})\n"
             f"[dim]{bar(s_pct, BAR)}[/dim]\n"
+            # Row 2: today's total progress
+            f"Today's progress:  [{day_color}]{today:,}[/{day_color}] / {daily_tgt:,}  "
+            f"({day_pct:.0%})\n"
+            f"[{day_color}]{bar(day_pct, BAR)}[/{day_color}]\n"
+            # Row 3: current prompt
             f"[dim]Prompt: {snap['last_prompt'][:70]}[/dim]"
         )
     else:
@@ -481,7 +490,14 @@ def _build_dashboard(snap: dict, config: dict, elapsed: str) -> "Table":
             nxt_str = "starting up…"
         last_f = snap.get("last_fired")
         last_str = last_f.strftime("%H:%M:%S") if last_f else "—"
-        sess_text = f"[dim]● Idle  {nxt_str}  |  last session: {last_str}[/dim]"
+        day_pct   = min(today / max(daily_tgt, 1), 1.0)
+        day_color = "green" if day_pct >= 1.0 else "cyan"
+        sess_text = (
+            f"[dim]● Idle  {nxt_str}  |  last session: {last_str}[/dim]\n"
+            f"Today's progress:  [{day_color}]{today:,}[/{day_color}] / {daily_tgt:,}  "
+            f"({day_pct:.0%})\n"
+            f"[{day_color}]{bar(day_pct, BAR)}[/{day_color}]"
+        )
     root.add_row(Panel(sess_text, title="[bold]Session", border_style="yellow", padding=(0, 1)))
 
     # ── Last 7 days sparkline ──
