@@ -532,9 +532,11 @@ def _work_session(config, config_path, tz, state, token_field, model, weekly_tar
         if total >= seg_tgt:
             break
         with ds._lock:
-            ds.last_prompt = prompt[:80]
+            ds.last_prompt = prompt  # store full prompt for dashboard
             ds.status_msg = ""
             ds.sleep_until = None
+        # Log the full prompt before calling API
+        ds.log(f"  Prompt: {prompt}")
         tokens, err = _call_api(client, model, prompt, token_field)
         if err:
             ds.log(f"  API error: {err}")
@@ -544,7 +546,7 @@ def _work_session(config, config_path, tz, state, token_field, model, weekly_tar
             ds.refresh_consumption()
             with ds._lock:
                 ds.session_tokens = total
-            ds.log(f"  +{tokens:,} tk  [{prompt[:50]}\u2026]  total={total:,}/{seg_tgt:,}")
+            ds.log(f"  +{tokens:,} tk  total={total:,}/{seg_tgt:,}")
         if total < seg_tgt and not ds.stop_event.is_set():
             sleep = _r.randint(30, 180)
             wake = datetime.datetime.now() + datetime.timedelta(seconds=sleep)
@@ -723,7 +725,18 @@ def _build_dashboard(snap: dict, config: dict, elapsed: str) -> "Table":
             # Generating prompts or other blocking state
             sub_line = f"[dim]\u29d7 {status_msg}[/dim]"
         else:
-            sub_line = f"[dim]{i18n.t('prompt_label')}: {snap['last_prompt'][:70]}[/dim]"
+            # Wrap full prompt across up to 3 lines of ~72 chars each
+            full_prompt = snap.get("last_prompt", "")
+            import textwrap
+            wrapped = textwrap.wrap(full_prompt, width=72) if full_prompt else []
+            if len(wrapped) > 3:
+                wrapped = wrapped[:3]
+                wrapped[-1] = wrapped[-1][:69] + "\u2026"
+            prompt_lines = "\n".join(wrapped) if wrapped else ""
+            sub_line = (
+                f"[dim]{i18n.t('prompt_label')}:[/dim]\n"
+                f"[dim]{prompt_lines}[/dim]"
+            ) if prompt_lines else f"[dim]{i18n.t('prompt_label')}: —[/dim]"
 
         sess_text = (
             f"[yellow]\u25cf {i18n.t('active_label')}[/yellow]  "
