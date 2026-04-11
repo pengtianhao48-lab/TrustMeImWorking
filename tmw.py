@@ -12,6 +12,7 @@ Usage:
   tmw wizard
   tmw platforms
 """
+from __future__ import annotations
 
 import argparse
 import sys

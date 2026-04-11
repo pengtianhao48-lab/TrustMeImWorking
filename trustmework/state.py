@@ -2,6 +2,7 @@
 Local state management — tracks daily and weekly token consumption.
 All records are stored in a JSON file alongside the config.
 """
+from __future__ import annotations
 
 import datetime
 import json

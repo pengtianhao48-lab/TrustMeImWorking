@@ -2,6 +2,7 @@
 Platform presets for all major LLM providers.
 Default models are verified against official documentation as of April 2026.
 """
+from __future__ import annotations
 
 # Base URLs for all supported platforms
 PLATFORM_URLS: dict[str, str] = {
@@ -124,7 +125,7 @@ PLATFORM_DISPLAY_NAMES: dict[str, str] = {
 }
 
 
-def get_base_url(platform: str, custom_url: str | None = None) -> str:
+def get_base_url(platform: str, custom_url: Optional[str] = None) -> str:
     """Resolve the base URL for a given platform."""
     if custom_url:
         return custom_url
