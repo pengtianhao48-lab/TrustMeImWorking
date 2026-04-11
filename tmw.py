@@ -35,6 +35,7 @@ from trustmework import config as cfg_mod
 from trustmework import state as st
 from trustmework import engine
 from trustmework import scheduler as sched
+from trustmework import i18n
 from trustmework.platforms import PLATFORM_DISPLAY_NAMES, list_platforms
 
 DEFAULT_CONFIG = "config.json"
@@ -44,11 +45,14 @@ DEFAULT_CONFIG = "config.json"
 
 def _load_config(path: str):
     try:
-        return cfg_mod.load(path)
+        cfg = cfg_mod.load(path)
+        # Apply language from config so all subsequent messages are localised
+        i18n.set_lang(cfg.get("lang", "en"))
+        return cfg
     except (FileNotFoundError, ValueError) as exc:
         print_error(str(exc))
         if path == DEFAULT_CONFIG:
-            print_info("Tip: run 'tmw wizard' first to create config.json")
+            print_info(i18n.t("tip_run_wizard"))
         sys.exit(1)
 
 
@@ -117,7 +121,9 @@ def cmd_status(args):
     platform = PLATFORM_DISPLAY_NAMES.get(
         config.get("platform", "custom").lower(), config.get("platform", "custom")
     )
-    mode = "Work-Simulation" if config.get("simulate_work") else "Random"
+    from trustmework.daemon import _mode as _get_mode
+    _mode_key = {"work": "mode_work", "immediate": "mode_immediate", "spread": "mode_spread"}
+    mode = i18n.t(_mode_key.get(_get_mode(config), "mode_immediate"))
 
     from trustmework import daemon as _daemon
     config_abs = str(Path(args.config).resolve())

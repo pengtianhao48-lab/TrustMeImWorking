@@ -655,9 +655,31 @@ def run_wizard() -> None:
         config["jwt_ttl_seconds"] = None
 
     # ── Write config ──────────────────────────────────────────────────────────
+    config["lang"] = _LANG  # persist language choice
     Path(output).write_text(json.dumps(config, ensure_ascii=False, indent=2), encoding="utf-8")
 
     print("\n" + "─" * 60)
     print_success(_t("saved_to", path=output))
     print("─" * 60)
-    print(_t("next_steps"))
+
+    # Detect which python command the user is running
+    import subprocess as _sp
+    _py = "python3"
+    try:
+        r = _sp.run(["python3", "--version"], capture_output=True, timeout=3)
+        if r.returncode != 0:
+            _py = "python"
+    except Exception:
+        _py = "python"
+
+    from trustmework.i18n import t as _it
+    _it_lang = _LANG  # already set above
+    from trustmework import i18n as _i18n
+    _i18n.set_lang(_LANG)
+
+    print()
+    print(f"  {_it('next_steps_title')}")
+    print(_it("next_step_start", py=_py))
+    print(_it("next_step_logs",  py=_py))
+    print(_it("next_step_stop"))
+    print()

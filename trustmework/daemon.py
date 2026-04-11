@@ -44,6 +44,7 @@ from .engine import (
 from . import state as st
 from .platforms import get_default_model, PLATFORM_DISPLAY_NAMES
 from .display import print_info, print_success, print_warning, print_error
+from . import i18n
 
 
 # ── Path helpers ──────────────────────────────────────────────────────────────
@@ -114,6 +115,8 @@ class DashState:
         self.config = config
         self.config_path = config_path
         self.tz = _resolve_tz(config)
+        # Apply language from config
+        i18n.set_lang(config.get("lang", "en"))
 
         # Consumption
         self.today_tokens: int = 0
@@ -493,8 +496,8 @@ def _build_dashboard(snap: dict, config: dict, elapsed: str) -> "Table":
     platform = PLATFORM_DISPLAY_NAMES.get(
         config.get("platform", "custom").lower(), config.get("platform", "custom")
     )
-    _mode_map = {"work": "Work-Simulation", "immediate": "Immediate (ASAP)", "spread": "Spread (even)"}
-    mode = _mode_map.get(_mode(config), _mode(config))
+    _mode_key = {"work": "mode_work", "immediate": "mode_immediate", "spread": "mode_spread"}
+    mode = i18n.t(_mode_key.get(_mode(config), "mode_immediate"))
 
     today     = snap["today"]
     daily_tgt = max(snap["daily_target"], 1)
@@ -526,13 +529,14 @@ def _build_dashboard(snap: dict, config: dict, elapsed: str) -> "Table":
     header.add_column(style="dim")
     header.add_row(
         "TrustMeImWorking",
-        f"Platform: {platform}",
-        f"Mode: {mode}",
+        f"{i18n.t('platform_label')}: {platform}",
+        f"{i18n.t('mode_label')}: {mode}",
     )
     header.add_row(
         "",
-        f"Uptime: {elapsed}",
-        f"Config: {Path(snap.get('config_path', 'config.json')).name}" if "config_path" in snap else "",
+        f"{i18n.t('uptime_label')}: {elapsed}",
+        (f"{i18n.t('config_label')}: {Path(snap.get('config_path', 'config.json')).name}"
+         if "config_path" in snap else ""),
     )
     root.add_row(Panel(header, border_style="cyan", padding=(0, 1)))
 
@@ -543,16 +547,18 @@ def _build_dashboard(snap: dict, config: dict, elapsed: str) -> "Table":
     prog_table.add_column(width=22, style="dim")
 
     prog_table.add_row(
-        "Today",
+        i18n.t("today_label"),
         f"[{today_color}]{bar(today_pct)}[/{today_color}]",
         f"[{today_color}]{today:,}[/{today_color}] / {daily_tgt:,}  ({today_pct:.0%})",
     )
     prog_table.add_row(
-        "This week",
+        i18n.t("week_label"),
         f"[{week_color}]{bar(week_pct)}[/{week_color}]",
         f"[{week_color}]{week:,}[/{week_color}] / {wmin:,}–{wmax:,}",
     )
-    root.add_row(Panel(prog_table, title="[bold]Consumption", border_style="blue", padding=(0, 1)))
+    root.add_row(Panel(prog_table,
+                       title=f"[bold]{i18n.t('consumption_title')}",
+                       border_style="blue", padding=(0, 1)))
 
     # ── Session status ──
     if snap["session_active"]:
@@ -560,36 +566,41 @@ def _build_dashboard(snap: dict, config: dict, elapsed: str) -> "Table":
         day_pct   = min(today / max(daily_tgt, 1), 1.0)
         day_color = "green" if day_pct >= 1.0 else "cyan"
         sess_text = (
-            # Row 1: session progress
-            f"[yellow]● ACTIVE[/yellow]  "
-            f"This session: [yellow]{snap['session_tokens']:,}[/yellow] / {snap['session_target']:,}  "
-            f"({s_pct:.0%})\n"
+            f"[yellow]● {i18n.t('active_label')}[/yellow]  "
+            f"{i18n.t('this_session')}: [yellow]{snap['session_tokens']:,}[/yellow]"
+            f" / {snap['session_target']:,}  ({s_pct:.0%})\n"
             f"[dim]{bar(s_pct, BAR)}[/dim]\n"
-            # Row 2: today's total progress
-            f"Today's progress:  [{day_color}]{today:,}[/{day_color}] / {daily_tgt:,}  "
-            f"({day_pct:.0%})\n"
+            f"{i18n.t('todays_progress')}:  [{day_color}]{today:,}[/{day_color}]"
+            f" / {daily_tgt:,}  ({day_pct:.0%})\n"
             f"[{day_color}]{bar(day_pct, BAR)}[/{day_color}]\n"
-            # Row 3: current prompt
-            f"[dim]Prompt: {snap['last_prompt'][:70]}[/dim]"
+            f"[dim]{i18n.t('prompt_label')}: {snap['last_prompt'][:70]}[/dim]"
         )
     else:
+        # Build next-request countdown string
         nxt = snap.get("next_check_at")
         if nxt:
-            secs = max(0, int((nxt - datetime.datetime.now()).total_seconds()))
-            nxt_str = f"next check in {secs}s"
+            total_secs = max(0, int((nxt - datetime.datetime.now()).total_seconds()))
+            mins, secs = divmod(total_secs, 60)
+            if mins > 0:
+                nxt_str = i18n.t("next_request_mins", mins=mins, secs=secs)
+            else:
+                nxt_str = i18n.t("next_request_secs", secs=secs)
         else:
-            nxt_str = "starting up…"
+            nxt_str = i18n.t("starting_up")
         last_f = snap.get("last_fired")
         last_str = last_f.strftime("%H:%M:%S") if last_f else "—"
         day_pct   = min(today / max(daily_tgt, 1), 1.0)
         day_color = "green" if day_pct >= 1.0 else "cyan"
         sess_text = (
-            f"[dim]● Idle  {nxt_str}  |  last session: {last_str}[/dim]\n"
-            f"Today's progress:  [{day_color}]{today:,}[/{day_color}] / {daily_tgt:,}  "
-            f"({day_pct:.0%})\n"
+            f"[dim]● {i18n.t('idle_label')}  {nxt_str}"
+            f"  |  {i18n.t('last_session_label')}: {last_str}[/dim]\n"
+            f"{i18n.t('todays_progress')}:  [{day_color}]{today:,}[/{day_color}]"
+            f" / {daily_tgt:,}  ({day_pct:.0%})\n"
             f"[{day_color}]{bar(day_pct, BAR)}[/{day_color}]"
         )
-    root.add_row(Panel(sess_text, title="[bold]Session", border_style="yellow", padding=(0, 1)))
+    root.add_row(Panel(sess_text,
+                       title=f"[bold]{i18n.t('session_title')}",
+                       border_style="yellow", padding=(0, 1)))
 
     # ── Last 7 days sparkline ──
     if last_7:
@@ -603,18 +614,22 @@ def _build_dashboard(snap: dict, config: dict, elapsed: str) -> "Table":
             f"[dim]{d[5:]}[/dim] [cyan]{v:,}[/cyan]" for d, v in last_7[-3:]
         )
         hist_text = f"[bold]{spark}[/bold]   {days_text}"
-        root.add_row(Panel(hist_text, title="[bold]Last 7 Days", border_style="dim", padding=(0, 1)))
+        root.add_row(Panel(hist_text,
+                           title=f"[bold]{i18n.t('last7_title')}",
+                           border_style="dim", padding=(0, 1)))
 
     # ── Log tail ──
     log_lines = snap["log_lines"]
     if log_lines:
         log_text = "\n".join(f"[dim]{line}[/dim]" for line in log_lines)
     else:
-        log_text = "[dim]No log entries yet.[/dim]"
-    root.add_row(Panel(log_text, title="[bold]Recent Log", border_style="dim", padding=(0, 1)))
+        log_text = f"[dim]{i18n.t('no_log_yet')}[/dim]"
+    root.add_row(Panel(log_text,
+                       title=f"[bold]{i18n.t('log_title')}",
+                       border_style="dim", padding=(0, 1)))
 
     # Footer
-    root.add_row("[dim]  Press [bold]Ctrl+C[/bold] to stop[/dim]")
+    root.add_row(f"[dim]  {i18n.t('press_ctrl_c')}[/dim]")
 
     return root
 
