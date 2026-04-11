@@ -143,7 +143,7 @@ class DashState:
         self.today_done: bool = False  # True when today's quota is reached
 
         # Log ring buffer (last 8 lines)
-        self.log_lines: Deque[str] = deque(maxlen=8)
+        self.log_lines: Deque[str] = deque(maxlen=50)
 
         # Control
         self.running: bool = True
@@ -856,10 +856,12 @@ def _build_dashboard(snap: dict, config: dict, elapsed: str) -> "Table":
                            title=f"[bold]{i18n.t('last7_title')}",
                            border_style="dim", padding=(0, 1)))
 
-    # ── Log tail ──
+    # ── Log tail (newest first) ──
     log_lines = snap["log_lines"]
-    if log_lines:
-        log_text = "\n".join(f"[dim]{line}[/dim]" for line in log_lines)
+    # Show last 8 lines in reverse order (newest at top)
+    display_lines = list(reversed(list(log_lines)))[:8]
+    if display_lines:
+        log_text = "\n".join(f"[dim]{line}[/dim]" for line in display_lines)
     else:
         log_text = f"[dim]{i18n.t('no_log_yet')}[/dim]"
     root.add_row(Panel(log_text,
@@ -867,7 +869,10 @@ def _build_dashboard(snap: dict, config: dict, elapsed: str) -> "Table":
                        border_style="dim", padding=(0, 1)))
 
     # Footer
-    root.add_row(f"[dim]  {i18n.t('press_ctrl_c')}[/dim]")
+    py = "python3"
+    cfg = snap.get("config_path", "config.json")
+    logs_cmd = f"{py} tmw.py logs" if cfg == "config.json" else f"{py} tmw.py logs --config {cfg}"
+    root.add_row(f"[dim]  {i18n.t('press_ctrl_c')}   │   {logs_cmd}  {i18n.t('logs_full_hint')}[/dim]")
 
     return root
 

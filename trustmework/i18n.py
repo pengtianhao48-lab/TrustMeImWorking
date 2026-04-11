@@ -63,6 +63,7 @@ _STRINGS: dict[str, dict[str, str]] = {
 
         # footer
         "press_ctrl_c":         "Press [bold]Ctrl+C[/bold] to stop",
+        "logs_full_hint":        "to view full log",
 
         # daemon log messages
         "daemon_started":       "Daemon started.",
@@ -135,6 +136,7 @@ _STRINGS: dict[str, dict[str, str]] = {
 
         # history panel
         "last7_title":          "\u8fd1 7 \u5929",
+        "logs_full_hint":        "\u67e5\u770b\u5b8c\u6574\u65e5\u5fd7",
 
         # log panel
         "log_title":            "\u6700\u8fd1\u65e5\u5fd7",
