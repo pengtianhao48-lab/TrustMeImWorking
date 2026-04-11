@@ -21,6 +21,15 @@ from pathlib import Path
 # Ensure package is importable when run directly
 sys.path.insert(0, str(Path(__file__).parent))
 
+# Python 3.9+ has zoneinfo in stdlib; 3.8 needs backports.zoneinfo
+try:
+    import zoneinfo
+except ImportError:
+    try:
+        from backports import zoneinfo  # type: ignore[no-redef]
+    except ImportError:
+        zoneinfo = None  # type: ignore[assignment]
+
 from trustmework import __version__
 from trustmework.display import print_banner, print_error, print_info, print_success, print_status_panel
 from trustmework import config as cfg_mod
@@ -60,10 +69,8 @@ def cmd_status(args):
         sys.exit(1)
 
     import datetime
-    import zoneinfo
-
     tz_name = config.get("timezone", "")
-    if tz_name:
+    if tz_name and zoneinfo is not None:
         try:
             tz = zoneinfo.ZoneInfo(tz_name)
         except Exception:

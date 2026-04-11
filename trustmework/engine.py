@@ -15,8 +15,18 @@ from __future__ import annotations
 import datetime
 import random
 import subprocess
+import sys
 import time
 from typing import Any
+
+# Python 3.9+ has zoneinfo in stdlib; 3.8 needs backports.zoneinfo
+try:
+    import zoneinfo
+except ImportError:
+    try:
+        from backports import zoneinfo  # type: ignore[no-redef]
+    except ImportError:
+        zoneinfo = None  # type: ignore[assignment]
 
 from . import state as st
 from .display import (
@@ -165,7 +175,7 @@ def _resolve_api_key(config: dict) -> str:
 
 # ── Token field extraction ────────────────────────────────────────────────────
 
-def _extract_tokens(resp, token_field: str | None, response_headers: dict | None = None) -> int:
+def _extract_tokens(resp, token_field: Optional[str], response_headers: Optional[dict] = None) -> int:
     """
     Extract token count from an API response.
 
@@ -309,7 +319,7 @@ def _build_client(config: dict):
 
 # ── API call ──────────────────────────────────────────────────────────────────
 
-def _call_api(client, model: str, prompt: str, token_field: str | None = None) -> int:
+def _call_api(client, model: str, prompt: str, token_field: Optional[str] = None) -> int:
     """Make one API call, return tokens consumed (0 on error)."""
     try:
         resp = client.chat.completions.create(
@@ -318,7 +328,7 @@ def _call_api(client, model: str, prompt: str, token_field: str | None = None) -
             max_tokens=512,
         )
         # Try to get response headers for header-based token extraction
-        response_headers: dict | None = None
+        response_headers: Optional[dict] = None
         if token_field and token_field.startswith("header:"):
             # The openai SDK wraps the raw response; attempt to access it
             try:
@@ -336,9 +346,8 @@ def _call_api(client, model: str, prompt: str, token_field: str | None = None) -
 
 def _resolve_tz(config: dict):
     """Resolve timezone from config, fall back to local."""
-    import zoneinfo
     tz_name = config.get("timezone", "")
-    if tz_name:
+    if tz_name and zoneinfo is not None:
         try:
             return zoneinfo.ZoneInfo(tz_name)
         except Exception:
@@ -412,7 +421,7 @@ def _current_segment(now_time: datetime.time, segments):
     return None
 
 
-def _generate_work_prompts(client, model: str, job_desc: str, token_field: str | None = None) -> list[str]:
+def _generate_work_prompts(client, model: str, job_desc: str, token_field: Optional[str] = None) -> List[str]:
     """
     Ask the LLM to generate job-relevant prompts.
     For engineering roles, generates prompts with real code context (file paths,

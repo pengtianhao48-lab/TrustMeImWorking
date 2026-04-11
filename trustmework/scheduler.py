@@ -14,6 +14,15 @@ import sys
 import time
 from pathlib import Path
 
+# Python 3.9+ has zoneinfo in stdlib; 3.8 needs backports.zoneinfo
+try:
+    import zoneinfo
+except ImportError:
+    try:
+        from backports import zoneinfo  # type: ignore[no-redef]
+    except ImportError:
+        zoneinfo = None  # type: ignore[assignment]
+
 from .display import print_error, print_info, print_success, print_warning
 
 _CRON_TAG = "# tmw-managed"
@@ -80,7 +89,7 @@ def _log_file(config_path: str) -> Path:
     return Path(config_path).parent / "tmw_daemon.log"
 
 
-def _daemon_running(config_path: str) -> int | None:
+def _daemon_running(config_path: str) -> Optional[int]:
     pf = _pid_file(config_path)
     if not pf.exists():
         return None
@@ -108,9 +117,10 @@ def in_work_window():
         cfg = json.loads(open(CONFIG).read())
         if not cfg.get("simulate_work"):
             return True
-        import zoneinfo, datetime as dt
+        import datetime as dt
         tz_name = cfg.get("timezone","")
-        tz = zoneinfo.ZoneInfo(tz_name) if tz_name else dt.datetime.now().astimezone().tzinfo
+        tz = (zoneinfo.ZoneInfo(tz_name) if (tz_name and zoneinfo is not None)
+              else dt.datetime.now().astimezone().tzinfo)
         now = dt.datetime.now(tz)
         if now.weekday() >= 5:
             return False
@@ -181,7 +191,7 @@ def uninstall(config_path: str) -> None:
     _stop_daemon(config_path)
 
 
-def status(config_path: str | None = None) -> None:
+def status(config_path: Optional[str] = None) -> None:
     if _has_crontab():
         lines = _read_crontab().splitlines()
         managed = [l for l in lines if _CRON_TAG not in l and
