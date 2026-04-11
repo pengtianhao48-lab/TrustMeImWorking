@@ -203,6 +203,47 @@ def _mode(config: dict) -> str:
     return config.get("mode", "immediate")
 
 
+def _next_work_start(config: dict, tz, now: datetime.datetime) -> datetime.datetime:
+    """
+    Return the next datetime when work mode will be able to fire:
+    - If today is a weekday and work_start hasn't passed yet: today at work_start
+    - If today is a weekday but we're past work_end (or in lunch break): today at next segment start
+    - Otherwise: next weekday at work_start
+    """
+    work_start_t = _parse_hhmm(config.get("work_start", "09:00"))
+    work_end_t   = _parse_hhmm(config.get("work_end",   "18:00"))
+    segments     = _work_segments(work_start_t, work_end_t)
+
+    # Check if any segment starts later today (still a weekday)
+    if now.weekday() < 5:
+        for seg_start, seg_end, _ in segments:
+            if now.time() < seg_start:
+                return now.replace(
+                    hour=seg_start.hour, minute=seg_start.minute,
+                    second=0, microsecond=0
+                )
+
+    # Find next weekday
+    candidate = now.date() + datetime.timedelta(days=1)
+    for _ in range(7):
+        if candidate.weekday() < 5:
+            first_seg_start = segments[0][0] if segments else work_start_t
+            return datetime.datetime(
+                candidate.year, candidate.month, candidate.day,
+                first_seg_start.hour, first_seg_start.minute, 0,
+                tzinfo=now.tzinfo
+            )
+        candidate += datetime.timedelta(days=1)
+
+    # Fallback
+    tomorrow = now.date() + datetime.timedelta(days=1)
+    return datetime.datetime(
+        tomorrow.year, tomorrow.month, tomorrow.day,
+        work_start_t.hour, work_start_t.minute, 0,
+        tzinfo=now.tzinfo
+    )
+
+
 def _next_fire_time(config: dict, tz, now: datetime.datetime) -> datetime.datetime:
     """
     Return the next datetime when a new session will be fired,
@@ -256,11 +297,17 @@ def _should_fire_now(config: dict, tz, last_fired_date: Optional[datetime.date])
     if mode == "work":
         if last_fired_date == today:
             return False
+        demo = config.get("_demo_force_weekday", False)
+        is_weekday = now.weekday() < 5 or demo
+        if not is_weekday:
+            return False
+        # --demo: skip time-segment check, fire immediately
+        if demo:
+            return True
         work_start = _parse_hhmm(config["work_start"])
         work_end   = _parse_hhmm(config["work_end"])
         segments   = _work_segments(work_start, work_end)
-        is_weekday = now.weekday() < 5 or config.get("_demo_force_weekday", False)
-        return _current_segment(now.time(), segments) is not None and is_weekday
+        return _current_segment(now.time(), segments) is not None
 
     elif mode == "immediate":
         # Today: fire right away (last_fired_date is None or a past date).
@@ -432,8 +479,12 @@ def _work_session(config, config_path, tz, state, token_field, model, weekly_tar
     weight     = _current_segment(now.time(), segments)
 
     if weight is None:
-        ds.log(f"Outside work hours ({now.strftime('%H:%M')}) — skipping.")
-        return
+        if demo:
+            # --demo: use first segment's weight even outside work hours
+            weight = segments[0][2] if segments else 0.4
+        else:
+            ds.log(f"Outside work hours ({now.strftime('%H:%M')}) — skipping.")
+            return
 
     daily_tgt = _daily_target(weekly_target, 5)
     today = st.today_consumed(state, tz)
@@ -524,10 +575,14 @@ def _daemon_thread(ds: DashState) -> None:
                 if now_dt.minute == 0 and now_dt.second < 60:
                     ds.log(f"Heartbeat {now_dt.strftime('%H:%M')} — waiting.")
 
-            # Set next_check_at: if today is done, point to next firing time
+            # Set next_check_at
             with ds._lock:
                 if ds.today_done:
+                    # Today done: point to next fire day
                     ds.next_check_at = _next_fire_time(config, tz, now_dt)
+                elif _mode(config) == "work" and not config.get("_demo_force_weekday"):
+                    # Work mode outside hours: point to next work segment start
+                    ds.next_check_at = _next_work_start(config, tz, now_dt)
                 else:
                     ds.next_check_at = datetime.datetime.now() + datetime.timedelta(seconds=60)
 
