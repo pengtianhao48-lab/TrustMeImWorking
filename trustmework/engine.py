@@ -511,8 +511,10 @@ def run_immediate_mode(config: dict, config_path: str, dry_run: bool = False) ->
     for prompt in pool:
         if total >= remaining:
             break
-        tokens = _call_api(client, model, prompt, token_field)
-        if tokens:
+        tokens, err = _call_api(client, model, prompt, token_field)
+        if err:
+            print_error(f"API error: {err}")
+        elif tokens:
             total += tokens
             st.record(config_path, state, tokens, tz)
             print_api_call(prompt, tokens, total, remaining)
@@ -578,8 +580,10 @@ def run_spread_mode(config: dict, config_path: str, dry_run: bool = False) -> No
     for prompt in pool:
         if total >= remaining:
             break
-        tokens = _call_api(client, model, prompt, token_field)
-        if tokens:
+        tokens, err = _call_api(client, model, prompt, token_field)
+        if err:
+            print_error(f"API error: {err}")
+        elif tokens:
             total += tokens
             st.record(config_path, state, tokens, tz)
             print_api_call(prompt, tokens, total, remaining)
@@ -661,8 +665,10 @@ def run_work_mode(config: dict, config_path: str, dry_run: bool = False) -> None
     for prompt in pool:
         if total >= seg_tgt:
             break
-        tokens = _call_api(client, model, prompt, token_field)
-        if tokens:
+        tokens, err = _call_api(client, model, prompt, token_field)
+        if err:
+            print_error(f"API error: {err}")
+        elif tokens:
             total += tokens
             st.record(config_path, state, tokens, tz)
             print_api_call(prompt, tokens, total, seg_tgt)
