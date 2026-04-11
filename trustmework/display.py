@@ -12,33 +12,43 @@ try:
     from rich.console import Console
     from rich.panel import Panel
     from rich.table import Table
-    from rich.progress import Progress, BarColumn, TextColumn, TimeElapsedColumn
     from rich.text import Text
-    from rich import print as rprint
     _RICH = True
 except ImportError:
     _RICH = False
 
 console = Console() if _RICH else None
 
+TAGLINE = "Simulate API token usage to hit your KPI — the smart way."
 
-BANNER = r"""
- ______               _   __  __     ___         __        __         _    _
-|_   _|_ _  _ ___ _ _| |_|  \/  |___| __|_ __   \ \      / /__ _ __| | _(_)_ __   __ _
-  | || '_| || (_-<| '_| __| |\/| / -_) _|| '  \   \ \ /\ / / _ \ '__| |/ / | '_ \ / _` |
-  |_||_|  \_,_/__/|_|  \__|_|  |_\___|___|_|_|_|   \_V__V/\___/_|  |_|\_\_| .__/ \__, |
-                                                                             |_|    |___/
+# Fallback plain-text banner (no ASCII art, always renders correctly)
+_PLAIN_BANNER = """\
+ _____ _             _   __  __     ___ __        __         _    _
+|_   _| |_ _ _ _  _ __| |_|  \\/  |___| _|\\ \\      / /___  _ _| | _(_)_ _  __ _
+  | | | '_| || |  '_|  _| |\\/| / -_) _|  \\ \\ /\\ / / _ \\| '_| |/ / | ' \\/ _` |
+  |_| |_|  \\_,_|_|  \\__|_|  |_\\___|___|  \\_V__V/\\___/|_| |_|\\_\\_|_||_\\__, |
+                                                                        |___/
 """
-
-TAGLINE = "📊  Simulate API token usage to hit your KPI — the smart way."
 
 
 def print_banner() -> None:
     if _RICH:
-        console.print(f"[bold cyan]{BANNER}[/bold cyan]")
-        console.print(f"[dim]{TAGLINE}[/dim]\n")
+        # Use Rich markup for a clean, always-correct title block
+        console.print()
+        console.print(
+            Panel.fit(
+                Text.assemble(
+                    ("TrustMeImWorking", "bold cyan"),
+                    "\n",
+                    (TAGLINE, "dim"),
+                ),
+                border_style="cyan",
+                padding=(0, 2),
+            )
+        )
+        console.print()
     else:
-        print(BANNER)
+        print(_PLAIN_BANNER)
         print(TAGLINE + "\n")
 
 
@@ -99,7 +109,7 @@ def print_status_panel(
     weekly_max: int,
     daily_target: int,
     tz_name: str,
-    last_7_days: list[tuple[str, int]],
+    last_7_days: list,
 ) -> None:
     weekly_mid = (weekly_min + weekly_max) / 2
     week_pct = week_consumed / weekly_mid * 100 if weekly_mid > 0 else 0
