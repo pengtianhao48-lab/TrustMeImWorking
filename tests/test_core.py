@@ -37,7 +37,7 @@ def test_get_default_model_deepseek():
 
 def test_get_default_model_unknown_fallback():
     model = get_default_model("unknown_platform_xyz")
-    assert model == "gpt-4o"
+    assert model == "gpt-5.4"
 
 
 # ── Config tests ──────────────────────────────────────────────────────────────
