@@ -375,14 +375,16 @@ def _immediate_session(config, config_path, tz, state, token_field, model, weekl
             break
         with ds._lock:
             ds.last_prompt = prompt[:80]
-        tokens = _call_api(client, model, prompt, token_field)
-        if tokens:
+        tokens, err = _call_api(client, model, prompt, token_field)
+        if err:
+            ds.log(f"  API error: {err}")
+        elif tokens:
             total += tokens
             st.record(config_path, state, tokens, tz)
             ds.refresh_consumption()
             with ds._lock:
                 ds.session_tokens = total
-            ds.log(f"  +{tokens:,} tk  [{prompt[:50]}…]  total={total:,}/{remaining:,}")
+            ds.log(f"  +{tokens:,} tk  [{prompt[:50]}\u2026]  total={total:,}/{remaining:,}")
         if total < remaining and not ds.stop_event.is_set():
             sleep = _r.randint(2, 8)  # short sleep — immediate mode
             ds.stop_event.wait(sleep)
@@ -440,14 +442,16 @@ def _spread_session(config, config_path, tz, state, token_field, model, weekly_t
             break
         with ds._lock:
             ds.last_prompt = prompt[:80]
-        tokens = _call_api(client, model, prompt, token_field)
-        if tokens:
+        tokens, err = _call_api(client, model, prompt, token_field)
+        if err:
+            ds.log(f"  API error: {err}")
+        elif tokens:
             total += tokens
             st.record(config_path, state, tokens, tz)
             ds.refresh_consumption()
             with ds._lock:
                 ds.session_tokens = total
-            ds.log(f"  +{tokens:,} tk  [{prompt[:50]}…]  total={total:,}/{remaining:,}")
+            ds.log(f"  +{tokens:,} tk  [{prompt[:50]}\u2026]  total={total:,}/{remaining:,}")
             # Recalculate sleep dynamically
             remaining_tokens = remaining - total
             if remaining_tokens > 0:
@@ -456,7 +460,7 @@ def _spread_session(config, config_path, tz, state, token_field, model, weekly_t
                 calls_left = max(remaining_tokens // max(tokens, 1), 1)
                 sleep_between = max(int(secs_left2 / calls_left), 5)
         if total < remaining and not ds.stop_event.is_set():
-            ds.log(f"  Sleeping {sleep_between}s…")
+            ds.log(f"  Sleeping {sleep_between}s\u2026")
             ds.stop_event.wait(sleep_between)
 
     with ds._lock:
@@ -520,17 +524,19 @@ def _work_session(config, config_path, tz, state, token_field, model, weekly_tar
             break
         with ds._lock:
             ds.last_prompt = prompt[:80]
-        tokens = _call_api(client, model, prompt, token_field)
-        if tokens:
+        tokens, err = _call_api(client, model, prompt, token_field)
+        if err:
+            ds.log(f"  API error: {err}")
+        elif tokens:
             total += tokens
             st.record(config_path, state, tokens, tz)
             ds.refresh_consumption()
             with ds._lock:
                 ds.session_tokens = total
-            ds.log(f"  +{tokens:,} tk  [{prompt[:50]}…]  total={total:,}/{seg_tgt:,}")
+            ds.log(f"  +{tokens:,} tk  [{prompt[:50]}\u2026]  total={total:,}/{seg_tgt:,}")
         if total < seg_tgt and not ds.stop_event.is_set():
             sleep = _r.randint(30, 180)
-            ds.log(f"  Sleeping {sleep}s…")
+            ds.log(f"  Sleeping {sleep}s\u2026")
             ds.stop_event.wait(sleep)
 
     with ds._lock:

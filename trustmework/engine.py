@@ -17,7 +17,7 @@ import random
 import subprocess
 import sys
 import time
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 # Python 3.9+ has zoneinfo in stdlib; 3.8 needs backports.zoneinfo
 try:
@@ -319,8 +319,17 @@ def _build_client(config: dict):
 
 # ── API call ──────────────────────────────────────────────────────────────────
 
-def _call_api(client, model: str, prompt: str, token_field: Optional[str] = None) -> int:
-    """Make one API call, return tokens consumed (0 on error)."""
+def _call_api(
+    client,
+    model: str,
+    prompt: str,
+    token_field: Optional[str] = None,
+) -> Tuple[int, Optional[str]]:
+    """
+    Make one API call.
+    Returns (tokens, error_message).
+    tokens=0 and error_message is set on failure.
+    """
     try:
         resp = client.chat.completions.create(
             model=model,
@@ -330,16 +339,14 @@ def _call_api(client, model: str, prompt: str, token_field: Optional[str] = None
         # Try to get response headers for header-based token extraction
         response_headers: Optional[dict] = None
         if token_field and token_field.startswith("header:"):
-            # The openai SDK wraps the raw response; attempt to access it
             try:
                 response_headers = dict(resp._raw_response.headers)  # type: ignore[attr-defined]
             except AttributeError:
                 response_headers = None
 
-        return _extract_tokens(resp, token_field, response_headers)
+        return _extract_tokens(resp, token_field, response_headers), None
     except Exception as exc:
-        print_error(f"API call failed: {exc}")
-        return 0
+        return 0, str(exc)
 
 
 # ── Timezone helper ───────────────────────────────────────────────────────────
