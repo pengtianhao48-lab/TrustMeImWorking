@@ -47,6 +47,13 @@ _STRINGS: dict[str, dict[str, str]] = {
         "starting_up":          "starting up\u2026",
         "last_session_label":   "last session",
 
+        # session done state
+        "done_label":           "Today's quota complete!",
+        "next_fire_label":      "Next session starts in",
+        "next_fire_secs":       "{secs}s",
+        "next_fire_mins":       "{mins}m {secs:02d}s",
+        "next_fire_hrs":        "{hrs}h {mins:02d}m",
+
         # history panel
         "last7_title":          "Last 7 Days",
 
@@ -114,6 +121,13 @@ _STRINGS: dict[str, dict[str, str]] = {
         "next_request_mins":    "{mins} \u5206 {secs:02d} \u79d2\u540e\u53d1\u8d77\u4e0b\u6b21\u8bf7\u6c42",
         "starting_up":          "\u542f\u52a8\u4e2d\u2026",
         "last_session_label":   "\u4e0a\u6b21\u8bf7\u6c42",
+
+        # session done state
+        "done_label":           "\u4eca\u65e5\u914d\u989d\u5df2\u5b8c\u6210\uff01",
+        "next_fire_label":      "\u4e0b\u6b21\u542f\u52a8\u65f6\u95f4",
+        "next_fire_secs":       "{secs} \u79d2\u540e",
+        "next_fire_mins":       "{mins} \u5206 {secs:02d} \u79d2\u540e",
+        "next_fire_hrs":        "{hrs} \u5c0f\u65f6 {mins:02d} \u5206\u540e",
 
         # history panel
         "last7_title":          "\u8fd7 7 \u5929",

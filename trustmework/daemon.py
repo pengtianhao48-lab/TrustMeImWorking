@@ -137,6 +137,9 @@ class DashState:
         self.next_check_at: Optional[datetime.datetime] = None
         self.last_fired: Optional[datetime.datetime] = None
 
+        # Completion state
+        self.today_done: bool = False  # True when today's quota is reached
+
         # Log ring buffer (last 8 lines)
         self.log_lines: Deque[str] = deque(maxlen=8)
 
@@ -165,6 +168,9 @@ class DashState:
             wt = random.randint(self.weekly_min, self.weekly_max)
             divisor = 5 if self.config.get("simulate_work") else 7
             self.daily_target = _daily_target(wt, divisor)
+            # Mark today as done if quota reached
+            if self.daily_target > 0 and self.today_tokens >= self.daily_target:
+                self.today_done = True
 
     def snapshot(self) -> dict:
         with self._lock:
@@ -182,6 +188,7 @@ class DashState:
                 "started_at": self.started_at,
                 "next_check_at": self.next_check_at,
                 "last_fired": self.last_fired,
+                "today_done": self.today_done,
                 "log_lines": list(self.log_lines),
                 "running": self.running,
             }
@@ -194,6 +201,44 @@ def _mode(config: dict) -> str:
     if config.get("simulate_work"):
         return "work"
     return config.get("mode", "immediate")
+
+
+def _next_fire_time(config: dict, tz, now: datetime.datetime) -> datetime.datetime:
+    """
+    Return the next datetime when a new session will be fired,
+    used to show a meaningful countdown after today's quota is reached.
+
+    immediate / spread  → tomorrow 00:00
+    work                → next weekday's work_start
+                          (if today is Fri/Sat/Sun, skip to Monday)
+    """
+    mode = _mode(config)
+    today = now.date()
+
+    if mode in ("immediate", "spread"):
+        tomorrow = today + datetime.timedelta(days=1)
+        return datetime.datetime(
+            tomorrow.year, tomorrow.month, tomorrow.day,
+            0, 0, 0, tzinfo=now.tzinfo
+        )
+
+    # work mode: find next weekday
+    work_start_t = _parse_hhmm(config.get("work_start", "09:00"))
+    candidate = today + datetime.timedelta(days=1)
+    for _ in range(7):
+        if candidate.weekday() < 5:  # Mon–Fri
+            return datetime.datetime(
+                candidate.year, candidate.month, candidate.day,
+                work_start_t.hour, work_start_t.minute, 0,
+                tzinfo=now.tzinfo
+            )
+        candidate += datetime.timedelta(days=1)
+    # Fallback: tomorrow 00:00
+    tomorrow = today + datetime.timedelta(days=1)
+    return datetime.datetime(
+        tomorrow.year, tomorrow.month, tomorrow.day,
+        0, 0, 0, tzinfo=now.tzinfo
+    )
 
 
 def _should_fire_now(config: dict, tz, last_fired_date: Optional[datetime.date]) -> bool:
@@ -214,7 +259,8 @@ def _should_fire_now(config: dict, tz, last_fired_date: Optional[datetime.date])
         work_start = _parse_hhmm(config["work_start"])
         work_end   = _parse_hhmm(config["work_end"])
         segments   = _work_segments(work_start, work_end)
-        return _current_segment(now.time(), segments) is not None and now.weekday() < 5
+        is_weekday = now.weekday() < 5 or config.get("_demo_force_weekday", False)
+        return _current_segment(now.time(), segments) is not None and is_weekday
 
     elif mode == "immediate":
         # Today: fire right away (last_fired_date is None or a past date).
@@ -374,7 +420,8 @@ def _spread_session(config, config_path, tz, state, token_field, model, weekly_t
 def _work_session(config, config_path, tz, state, token_field, model, weekly_target, ds: DashState):
     import random as _r
     now = datetime.datetime.now(tz)
-    if now.weekday() >= 5:
+    demo = config.get("_demo_force_weekday", False)
+    if now.weekday() >= 5 and not demo:
         ds.log("Weekend — skipping.")
         return
 
@@ -453,25 +500,36 @@ def _daemon_thread(ds: DashState) -> None:
     mode = mode_map.get(_mode(config), _mode(config))
     ds.log(f"Mode: {mode}")
 
+    _prev_date: Optional[datetime.date] = None
+
     while not ds.stop_event.is_set():
         try:
             ds.refresh_consumption()
-            now_date = datetime.datetime.now(tz).date()
+            now_dt   = datetime.datetime.now(tz)
+            now_date = now_dt.date()
+
+            # Reset today_done when the date rolls over
+            if _prev_date is not None and now_date != _prev_date:
+                with ds._lock:
+                    ds.today_done = False
+            _prev_date = now_date
 
             if _should_fire_now(config, tz, last_fired_date):
                 with ds._lock:
-                    ds.last_fired = datetime.datetime.now(tz)
-                ds.log(f"Firing session at {datetime.datetime.now(tz).strftime('%H:%M:%S')}")
+                    ds.last_fired = now_dt
+                ds.log(f"Firing session at {now_dt.strftime('%H:%M:%S')}")
                 _run_session_with_state(config, config_path, ds)
                 last_fired_date = now_date
             else:
-                now = datetime.datetime.now(tz)
-                if now.minute == 0 and now.second < 60:
-                    ds.log(f"Heartbeat {now.strftime('%H:%M')} — waiting.")
+                if now_dt.minute == 0 and now_dt.second < 60:
+                    ds.log(f"Heartbeat {now_dt.strftime('%H:%M')} — waiting.")
 
-            # Set next check time
+            # Set next_check_at: if today is done, point to next firing time
             with ds._lock:
-                ds.next_check_at = datetime.datetime.now() + datetime.timedelta(seconds=60)
+                if ds.today_done:
+                    ds.next_check_at = _next_fire_time(config, tz, now_dt)
+                else:
+                    ds.next_check_at = datetime.datetime.now() + datetime.timedelta(seconds=60)
 
         except Exception as exc:
             ds.log(f"ERROR: {exc}")
@@ -561,6 +619,8 @@ def _build_dashboard(snap: dict, config: dict, elapsed: str) -> "Table":
                        border_style="blue", padding=(0, 1)))
 
     # ── Session status ──
+    today_done = snap.get("today_done", False)
+
     if snap["session_active"]:
         s_pct     = min(snap["session_tokens"] / max(snap["session_target"], 1), 1.0)
         day_pct   = min(today / max(daily_tgt, 1), 1.0)
@@ -575,6 +635,32 @@ def _build_dashboard(snap: dict, config: dict, elapsed: str) -> "Table":
             f"[{day_color}]{bar(day_pct, BAR)}[/{day_color}]\n"
             f"[dim]{i18n.t('prompt_label')}: {snap['last_prompt'][:70]}[/dim]"
         )
+        sess_border = "yellow"
+    elif today_done:
+        # Today's quota is fully consumed — show completion + next fire time
+        nxt = snap.get("next_check_at")
+        if nxt:
+            total_secs = max(0, int((nxt - datetime.datetime.now()).total_seconds()))
+            hrs,  rem  = divmod(total_secs, 3600)
+            mins, secs = divmod(rem, 60)
+            if hrs > 0:
+                next_str = i18n.t("next_fire_hrs", hrs=hrs, mins=mins)
+            elif mins > 0:
+                next_str = i18n.t("next_fire_mins", mins=mins, secs=secs)
+            else:
+                next_str = i18n.t("next_fire_secs", secs=secs)
+            # Also show absolute time
+            next_abs = nxt.strftime("%m-%d %H:%M")
+            next_detail = f"{next_str}  ({next_abs})"
+        else:
+            next_detail = i18n.t("starting_up")
+        sess_text = (
+            f"[green]✓ {i18n.t('done_label')}[/green]  "
+            f"{i18n.t('todays_progress')}:  [green]{today:,}[/green] / {daily_tgt:,}  (100%)\n"
+            f"[green]{bar(1.0, BAR)}[/green]\n"
+            f"[dim]{i18n.t('next_fire_label')}: {next_detail}[/dim]"
+        )
+        sess_border = "green"
     else:
         # Build next-request countdown string
         nxt = snap.get("next_check_at")
@@ -598,9 +684,10 @@ def _build_dashboard(snap: dict, config: dict, elapsed: str) -> "Table":
             f" / {daily_tgt:,}  ({day_pct:.0%})\n"
             f"[{day_color}]{bar(day_pct, BAR)}[/{day_color}]"
         )
+        sess_border = "yellow"
     root.add_row(Panel(sess_text,
                        title=f"[bold]{i18n.t('session_title')}",
-                       border_style="yellow", padding=(0, 1)))
+                       border_style=sess_border, padding=(0, 1)))
 
     # ── Last 7 days sparkline ──
     if last_7:

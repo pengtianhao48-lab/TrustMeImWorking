@@ -69,6 +69,9 @@ def cmd_start(args):
     if getattr(args, 'background', False):
         print_banner()
     config = _load_config(args.config)
+    if getattr(args, 'demo', False):
+        config = dict(config)  # shallow copy so we don't mutate the file
+        config['_demo_force_weekday'] = True
     from trustmework import daemon
     daemon.start(config, args.config, background=getattr(args, 'background', False))
 
@@ -225,6 +228,8 @@ Other commands (all use {DEFAULT_CONFIG} by default):
     _cfg(p_start)
     p_start.add_argument("--background", "-b", action="store_true",
                          help="Run silently in background instead of showing dashboard")
+    p_start.add_argument("--demo", action="store_true",
+                         help=argparse.SUPPRESS)  # hidden: force work-mode to treat today as a weekday
 
     # stop
     p_stop = sub.add_parser("stop", help="Stop the running daemon")
