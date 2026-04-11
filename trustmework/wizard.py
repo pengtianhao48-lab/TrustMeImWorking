@@ -469,7 +469,8 @@ def run_wizard() -> None:
         required=False,
         hint=_t("model_hint"),
     )
-    model = model_raw if model_raw and model_raw != default_model else None
+    # Use the entered value; if blank, fall back to platform default (never save None)
+    model = model_raw if model_raw else default_model
 
     # ── Step 5: Weekly Token Budget ───────────────────────────────────────────
     _section(_t("step5_title"))

@@ -134,7 +134,7 @@ _STRINGS: dict[str, dict[str, str]] = {
         "next_fire_hrs":        "{hrs} \u5c0f\u65f6 {mins:02d} \u5206\u540e",
 
         # history panel
-        "last7_title":          "\u8fd7 7 \u5929",
+        "last7_title":          "\u8fd1 7 \u5929",
 
         # log panel
         "log_title":            "\u6700\u8fd1\u65e5\u5fd7",

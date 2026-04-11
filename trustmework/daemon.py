@@ -606,7 +606,8 @@ def _daemon_thread(ds: DashState) -> None:
     mode = mode_map.get(_mode(config), _mode(config))
     ds.log(f"Mode: {mode}")
     # Log startup configuration summary
-    ds.log(f"Config: platform={config.get('platform','custom')}  model={config.get('model','?')}")
+    _effective_model = config.get('model') or get_default_model(config.get('platform', 'openai'))
+    ds.log(f"Config: platform={config.get('platform','custom')}  model={_effective_model}")
     ds.log(f"Config: weekly_min={config.get('weekly_min',0):,}  weekly_max={config.get('weekly_max',0):,}")
     base_url = config.get('base_url', '(default)')
     ds.log(f"Config: base_url={base_url}")
