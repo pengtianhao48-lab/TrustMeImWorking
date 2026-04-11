@@ -1,16 +1,19 @@
 """
 Daemon — persistent background runner for TrustMeImWorking.
 
-`tmw start` forks a background process that loops forever:
-  - Every minute it checks whether it should run a consumption session.
-  - In work-sim mode: only fires during work hours on weekdays.
-  - In random mode: fires once per day at a random time.
-  - After each session it sleeps until the next check interval.
-  - All output is appended to a log file alongside the config.
+`tmw start`
+  Default (foreground dashboard mode):
+    - Daemon loop runs in a background thread
+    - Main thread renders a Rich Live dashboard that refreshes every 2 s
+    - Shows: daemon status, today/week consumption progress bars,
+      next-session countdown, and the last 8 log lines
+    - Press Ctrl+C to stop
 
-`tmw stop`  sends SIGTERM to the daemon and removes the PID file.
-`tmw logs`  tails the log file.
-`tmw start --foreground`  runs in the current terminal (no fork).
+`tmw start --background`
+  Silent background process (fork), logs to <config>.log
+
+`tmw stop`   sends SIGTERM to the background daemon
+`tmw logs`   tails the log file
 """
 
 from __future__ import annotations
@@ -20,11 +23,12 @@ import os
 import random
 import signal
 import sys
+import threading
 import time
+from collections import deque
 from pathlib import Path
-from typing import Optional
+from typing import Deque, List, Optional, Tuple
 
-# Python 3.9+ has zoneinfo in stdlib; 3.8 needs backports.zoneinfo
 try:
     import zoneinfo
 except ImportError:
@@ -38,8 +42,9 @@ from .engine import (
     _build_client, _call_api, _generate_work_prompts, RANDOM_PROMPTS,
 )
 from . import state as st
-from .platforms import get_default_model
-from .display import print_info, print_success, print_warning, print_error, print_mode_header, print_skipped
+from .platforms import get_default_model, PLATFORM_DISPLAY_NAMES
+from .display import print_info, print_success, print_warning, print_error
+
 
 # ── Path helpers ──────────────────────────────────────────────────────────────
 
@@ -79,116 +84,206 @@ def _is_running(config_path: str) -> bool:
     if pid is None:
         return False
     try:
-        os.kill(pid, 0)  # signal 0 = check existence only
+        os.kill(pid, 0)
         return True
     except (ProcessLookupError, PermissionError):
         _remove_pid(config_path)
         return False
 
 
-# ── Logging redirect ──────────────────────────────────────────────────────────
+# ── Logging ───────────────────────────────────────────────────────────────────
 
 def _redirect_output(config_path: str) -> None:
-    """Redirect stdout/stderr to the log file (background mode)."""
     log = _log_path(config_path)
     fd = open(log, "a", buffering=1, encoding="utf-8")
     sys.stdout = fd
     sys.stderr = fd
 
 
-def _log(msg: str) -> None:
-    ts = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    print(f"[{ts}] {msg}", flush=True)
+def _ts() -> str:
+    return datetime.datetime.now().strftime("%H:%M:%S")
 
 
-# ── Next-run scheduling ───────────────────────────────────────────────────────
+# ── Shared dashboard state ────────────────────────────────────────────────────
 
-def _seconds_until_next_check() -> int:
-    """Sleep 60 seconds between loop ticks."""
-    return 60
+class DashState:
+    """Thread-safe state shared between daemon thread and dashboard renderer."""
 
+    def __init__(self, config: dict, config_path: str):
+        self._lock = threading.Lock()
+        self.config = config
+        self.config_path = config_path
+        self.tz = _resolve_tz(config)
+
+        # Consumption
+        self.today_tokens: int = 0
+        self.week_tokens: int = 0
+        self.daily_target: int = 0
+        self.weekly_min: int = config.get("weekly_min", 0)
+        self.weekly_max: int = config.get("weekly_max", 0)
+        self.last_7: List[Tuple[str, int]] = []
+
+        # Session
+        self.session_active: bool = False
+        self.session_tokens: int = 0
+        self.session_target: int = 0
+        self.last_prompt: str = ""
+
+        # Timing
+        self.started_at: datetime.datetime = datetime.datetime.now()
+        self.next_check_at: Optional[datetime.datetime] = None
+        self.last_fired: Optional[datetime.datetime] = None
+
+        # Log ring buffer (last 8 lines)
+        self.log_lines: Deque[str] = deque(maxlen=8)
+
+        # Control
+        self.running: bool = True
+        self.stop_event = threading.Event()
+
+    def log(self, msg: str) -> None:
+        line = f"[{_ts()}] {msg}"
+        with self._lock:
+            self.log_lines.append(line)
+        # Also write to log file
+        log_path = _log_path(self.config_path)
+        try:
+            with open(log_path, "a", encoding="utf-8") as f:
+                f.write(line + "\n")
+        except OSError:
+            pass
+
+    def refresh_consumption(self) -> None:
+        state = st.load(self.config_path)
+        with self._lock:
+            self.today_tokens = st.today_consumed(state, self.tz)
+            self.week_tokens  = st.week_consumed(state, self.tz)
+            self.last_7       = st.last_n_days(state, self.tz, 7)
+            wt = random.randint(self.weekly_min, self.weekly_max)
+            divisor = 5 if self.config.get("simulate_work") else 7
+            self.daily_target = _daily_target(wt, divisor)
+
+    def snapshot(self) -> dict:
+        with self._lock:
+            return {
+                "today": self.today_tokens,
+                "week": self.week_tokens,
+                "daily_target": self.daily_target,
+                "weekly_min": self.weekly_min,
+                "weekly_max": self.weekly_max,
+                "last_7": list(self.last_7),
+                "session_active": self.session_active,
+                "session_tokens": self.session_tokens,
+                "session_target": self.session_target,
+                "last_prompt": self.last_prompt,
+                "started_at": self.started_at,
+                "next_check_at": self.next_check_at,
+                "last_fired": self.last_fired,
+                "log_lines": list(self.log_lines),
+                "running": self.running,
+            }
+
+
+# ── Consumption helpers ───────────────────────────────────────────────────────
 
 def _random_fire_time(tz) -> datetime.time:
-    """
-    Pick a random time during the day for random-mode firing.
-    Stored in a module-level dict keyed by date so it's stable within a day.
-    """
     today = datetime.datetime.now(tz).date()
     key = str(today)
     if not hasattr(_random_fire_time, "_cache"):
         _random_fire_time._cache = {}  # type: ignore[attr-defined]
     if key not in _random_fire_time._cache:  # type: ignore[attr-defined]
-        # Random time between 08:00 and 22:00
         h = random.randint(8, 21)
         m = random.randint(0, 59)
         _random_fire_time._cache[key] = datetime.time(h, m)  # type: ignore[attr-defined]
-        # Evict old dates
         _random_fire_time._cache = {k: v for k, v in _random_fire_time._cache.items()  # type: ignore[attr-defined]
                                      if k >= str(today)}
     return _random_fire_time._cache[key]  # type: ignore[attr-defined]
 
 
-# ── Single-session runner (called from the loop) ──────────────────────────────
+def _should_fire_now(config: dict, tz, last_fired_date: Optional[datetime.date]) -> bool:
+    now = datetime.datetime.now(tz)
+    today = now.date()
+    if config.get("simulate_work"):
+        if last_fired_date == today:
+            return False
+        work_start = _parse_hhmm(config["work_start"])
+        work_end   = _parse_hhmm(config["work_end"])
+        segments   = _work_segments(work_start, work_end)
+        return _current_segment(now.time(), segments) is not None and now.weekday() < 5
+    else:
+        fire_time = _random_fire_time(tz)
+        fire_dt = datetime.datetime.combine(today, fire_time, tzinfo=tz)
+        diff = abs((now - fire_dt).total_seconds())
+        return diff < 60 and last_fired_date != today
 
-def _run_session(config: dict, config_path: str) -> None:
-    """Execute one consumption session (random or work-sim)."""
-    tz = _resolve_tz(config)
+
+def _run_session_with_state(config: dict, config_path: str, ds: DashState) -> None:
+    """Run one consumption session, updating DashState throughout."""
+    tz = ds.tz
     state = st.load(config_path)
     token_field = config.get("token_field") or None
     model = config.get("model") or get_default_model(config.get("platform", "openai"))
 
-    import random as _random
-    weekly_target = _random.randint(config["weekly_min"], config["weekly_max"])
+    wt = random.randint(config["weekly_min"], config["weekly_max"])
 
     if config.get("simulate_work"):
-        _run_work_session(config, config_path, tz, state, token_field, model, weekly_target)
+        _work_session(config, config_path, tz, state, token_field, model, wt, ds)
     else:
-        _run_random_session(config, config_path, tz, state, token_field, model, weekly_target)
+        _random_session(config, config_path, tz, state, token_field, model, wt, ds)
 
 
-def _run_random_session(config, config_path, tz, state, token_field, model, weekly_target):
+def _random_session(config, config_path, tz, state, token_field, model, weekly_target, ds: DashState):
     import random as _r
     daily_tgt = _daily_target(weekly_target, 7)
     today = st.today_consumed(state, tz)
     remaining = daily_tgt - today
 
-    _log(f"[Random Mode] daily_target={daily_tgt:,}  consumed={today:,}  remaining={remaining:,}")
-
+    ds.log(f"[Random] daily_target={daily_tgt:,}  consumed={today:,}  remaining={remaining:,}")
     if remaining <= 0:
-        _log("Daily target already reached — skipping session.")
+        ds.log("Daily target reached — skipping.")
         return
 
-    client = _build_client(config)
-    _log(f"Using model: {model}")
+    with ds._lock:
+        ds.session_active = True
+        ds.session_tokens = 0
+        ds.session_target = remaining
 
+    client = _build_client(config)
     prompts = RANDOM_PROMPTS.copy()
     _r.shuffle(prompts)
     pool = prompts * ((remaining // 200) + 5)
 
     total = 0
     for prompt in pool:
+        if ds.stop_event.is_set():
+            break
         if total >= remaining:
             break
+        with ds._lock:
+            ds.last_prompt = prompt[:80]
         tokens = _call_api(client, model, prompt, token_field)
         if tokens:
             total += tokens
             st.record(config_path, state, tokens, tz)
-            _log(f"  +{tokens:,} tokens  (prompt: {prompt[:60]}…)  total={total:,}/{remaining:,}")
-        if total < remaining:
+            ds.refresh_consumption()
+            with ds._lock:
+                ds.session_tokens = total
+            ds.log(f"  +{tokens:,} tk  [{prompt[:50]}…]  total={total:,}/{remaining:,}")
+        if total < remaining and not ds.stop_event.is_set():
             sleep = _r.randint(10, 60)
-            _log(f"  Sleeping {sleep}s…")
-            time.sleep(sleep)
+            ds.log(f"  Sleeping {sleep}s…")
+            ds.stop_event.wait(sleep)
 
-    _log(f"Session done. Consumed {total:,} tokens.")
+    with ds._lock:
+        ds.session_active = False
+    ds.log(f"Session done. +{total:,} tokens.")
 
 
-def _run_work_session(config, config_path, tz, state, token_field, model, weekly_target):
+def _work_session(config, config_path, tz, state, token_field, model, weekly_target, ds: DashState):
     import random as _r
     now = datetime.datetime.now(tz)
-
-    # Weekend check
     if now.weekday() >= 5:
-        _log("Weekend — skipping session.")
+        ds.log("Weekend — skipping.")
         return
 
     work_start = _parse_hhmm(config["work_start"])
@@ -198,131 +293,320 @@ def _run_work_session(config, config_path, tz, state, token_field, model, weekly
     weight     = _current_segment(now.time(), segments)
 
     if weight is None:
-        _log(f"Outside work hours ({now.strftime('%H:%M')}) — skipping session.")
+        ds.log(f"Outside work hours ({now.strftime('%H:%M')}) — skipping.")
         return
 
     daily_tgt = _daily_target(weekly_target, 5)
     today = st.today_consumed(state, tz)
     remaining = daily_tgt - today
 
-    _log(f"[Work-Sim Mode] {now.strftime('%H:%M')}  job={job_desc}  "
-         f"daily_target={daily_tgt:,}  consumed={today:,}  remaining={remaining:,}")
-
+    ds.log(f"[Work] {now.strftime('%H:%M')}  daily={daily_tgt:,}  consumed={today:,}  remaining={remaining:,}")
     if remaining <= 0:
-        _log("Daily target already reached — skipping session.")
+        ds.log("Daily target reached — skipping.")
         return
 
     seg_tgt = int(remaining * weight * _r.uniform(0.75, 1.25))
     seg_tgt = max(1, min(seg_tgt, remaining))
-    _log(f"Segment weight {weight:.0%} → targeting ~{seg_tgt:,} tokens this session.")
+    ds.log(f"Segment weight {weight:.0%} → targeting ~{seg_tgt:,} tokens.")
+
+    with ds._lock:
+        ds.session_active = True
+        ds.session_tokens = 0
+        ds.session_target = seg_tgt
 
     client = _build_client(config)
-    _log(f"Using model: {model}")
-    _log("Generating work-relevant prompts…")
+    ds.log("Generating work prompts…")
     work_prompts = _generate_work_prompts(client, model, job_desc, token_field)
-    _log(f"Generated {len(work_prompts)} prompts.")
+    ds.log(f"Generated {len(work_prompts)} prompts.")
 
     pool = (work_prompts * 20)
     _r.shuffle(pool)
 
     total = 0
     for prompt in pool:
+        if ds.stop_event.is_set():
+            break
         if total >= seg_tgt:
             break
+        with ds._lock:
+            ds.last_prompt = prompt[:80]
         tokens = _call_api(client, model, prompt, token_field)
         if tokens:
             total += tokens
             st.record(config_path, state, tokens, tz)
-            _log(f"  +{tokens:,} tokens  (prompt: {prompt[:60]}…)  total={total:,}/{seg_tgt:,}")
-        if total < seg_tgt:
+            ds.refresh_consumption()
+            with ds._lock:
+                ds.session_tokens = total
+            ds.log(f"  +{tokens:,} tk  [{prompt[:50]}…]  total={total:,}/{seg_tgt:,}")
+        if total < seg_tgt and not ds.stop_event.is_set():
             sleep = _r.randint(30, 180)
-            _log(f"  Sleeping {sleep}s…")
-            time.sleep(sleep)
+            ds.log(f"  Sleeping {sleep}s…")
+            ds.stop_event.wait(sleep)
 
-    _log(f"Session done. Consumed {total:,} tokens.")
+    with ds._lock:
+        ds.session_active = False
+    ds.log(f"Session done. +{total:,} tokens.")
 
 
-# ── Should-fire logic ─────────────────────────────────────────────────────────
+# ── Daemon thread loop ────────────────────────────────────────────────────────
 
-def _should_fire_now(config: dict, tz, last_fired_date: Optional[datetime.date]) -> bool:
-    """
-    Decide whether to start a session right now.
+def _daemon_thread(ds: DashState) -> None:
+    config = ds.config
+    config_path = ds.config_path
+    tz = ds.tz
+    last_fired_date: Optional[datetime.date] = None
 
-    Work-sim mode: fire whenever we're inside a work segment (engine will
-    skip if already at target). The loop checks every minute, so sessions
-    are naturally spaced by the inter-call sleep inside the session itself.
+    ds.log("Daemon started.")
+    mode = "Work-Simulation" if config.get("simulate_work") else "Random"
+    ds.log(f"Mode: {mode}")
 
-    Random mode: fire once per day at the randomly chosen time.
-    """
-    now = datetime.datetime.now(tz)
-    today = now.date()
+    while not ds.stop_event.is_set():
+        try:
+            ds.refresh_consumption()
+            now_date = datetime.datetime.now(tz).date()
 
-    if config.get("simulate_work"):
-        # Don't re-fire on the same minute (sessions are long)
-        if last_fired_date == today:
-            return False
-        work_start = _parse_hhmm(config["work_start"])
-        work_end   = _parse_hhmm(config["work_end"])
-        segments   = _work_segments(work_start, work_end)
-        return _current_segment(now.time(), segments) is not None and now.weekday() < 5
+            if _should_fire_now(config, tz, last_fired_date):
+                with ds._lock:
+                    ds.last_fired = datetime.datetime.now(tz)
+                ds.log(f"Firing session at {datetime.datetime.now(tz).strftime('%H:%M:%S')}")
+                _run_session_with_state(config, config_path, ds)
+                last_fired_date = now_date
+            else:
+                now = datetime.datetime.now(tz)
+                if now.minute == 0 and now.second < 60:
+                    ds.log(f"Heartbeat {now.strftime('%H:%M')} — waiting.")
+
+            # Set next check time
+            with ds._lock:
+                ds.next_check_at = datetime.datetime.now() + datetime.timedelta(seconds=60)
+
+        except Exception as exc:
+            ds.log(f"ERROR: {exc}")
+
+        ds.stop_event.wait(60)
+
+    ds.log("Daemon stopped.")
+    with ds._lock:
+        ds.running = False
+
+
+# ── Rich Live dashboard ───────────────────────────────────────────────────────
+
+def _build_dashboard(snap: dict, config: dict, elapsed: str) -> "Table":
+    from rich.table import Table
+    from rich.panel import Panel
+    from rich.progress import BarColumn, Progress, TextColumn
+    from rich.columns import Columns
+    from rich.text import Text
+    from rich import box
+
+    platform = PLATFORM_DISPLAY_NAMES.get(
+        config.get("platform", "custom").lower(), config.get("platform", "custom")
+    )
+    mode = "Work-Simulation" if config.get("simulate_work") else "Random"
+
+    today     = snap["today"]
+    daily_tgt = max(snap["daily_target"], 1)
+    week      = snap["week"]
+    wmin      = snap["weekly_min"]
+    wmax      = snap["weekly_max"]
+    last_7    = snap["last_7"]
+
+    today_pct = min(today / daily_tgt, 1.0)
+    week_pct  = min(week / max(wmax, 1), 1.0)
+
+    BAR = 28
+
+    def bar(pct: float, width: int = BAR) -> str:
+        filled = int(pct * width)
+        return "█" * filled + "░" * (width - filled)
+
+    today_color = "green" if today_pct >= 1.0 else "cyan"
+    week_color  = "green" if week_pct  >= 1.0 else "blue"
+
+    # ── Top info row ──
+    root = Table.grid(padding=(0, 2))
+    root.add_column()
+
+    # Header
+    header = Table.grid(padding=(0, 3))
+    header.add_column(style="bold cyan")
+    header.add_column(style="dim")
+    header.add_column(style="dim")
+    header.add_row(
+        "TrustMeImWorking",
+        f"Platform: {platform}",
+        f"Mode: {mode}",
+    )
+    header.add_row(
+        "",
+        f"Uptime: {elapsed}",
+        f"Config: {Path(snap.get('config_path', 'config.json')).name}" if "config_path" in snap else "",
+    )
+    root.add_row(Panel(header, border_style="cyan", padding=(0, 1)))
+
+    # ── Progress bars ──
+    prog_table = Table.grid(padding=(0, 1))
+    prog_table.add_column(width=14, style="bold")
+    prog_table.add_column(width=BAR + 2)
+    prog_table.add_column(width=22, style="dim")
+
+    prog_table.add_row(
+        "Today",
+        f"[{today_color}]{bar(today_pct)}[/{today_color}]",
+        f"[{today_color}]{today:,}[/{today_color}] / {daily_tgt:,}  ({today_pct:.0%})",
+    )
+    prog_table.add_row(
+        "This week",
+        f"[{week_color}]{bar(week_pct)}[/{week_color}]",
+        f"[{week_color}]{week:,}[/{week_color}] / {wmin:,}–{wmax:,}",
+    )
+    root.add_row(Panel(prog_table, title="[bold]Consumption", border_style="blue", padding=(0, 1)))
+
+    # ── Session status ──
+    if snap["session_active"]:
+        s_pct = min(snap["session_tokens"] / max(snap["session_target"], 1), 1.0)
+        sess_text = (
+            f"[yellow]● ACTIVE[/yellow]  "
+            f"{snap['session_tokens']:,} / {snap['session_target']:,}  ({s_pct:.0%})\n"
+            f"[dim]{bar(s_pct, BAR)}[/dim]\n"
+            f"[dim]Prompt: {snap['last_prompt'][:70]}[/dim]"
+        )
     else:
-        fire_time = _random_fire_time(tz)
-        now_t = now.time()
-        # Fire within a 1-minute window of the chosen time
-        fire_dt = datetime.datetime.combine(today, fire_time, tzinfo=tz)
-        diff = abs((now - fire_dt).total_seconds())
-        return diff < 60 and last_fired_date != today
+        nxt = snap.get("next_check_at")
+        if nxt:
+            secs = max(0, int((nxt - datetime.datetime.now()).total_seconds()))
+            nxt_str = f"next check in {secs}s"
+        else:
+            nxt_str = "starting up…"
+        last_f = snap.get("last_fired")
+        last_str = last_f.strftime("%H:%M:%S") if last_f else "—"
+        sess_text = f"[dim]● Idle  {nxt_str}  |  last session: {last_str}[/dim]"
+    root.add_row(Panel(sess_text, title="[bold]Session", border_style="yellow", padding=(0, 1)))
+
+    # ── Last 7 days sparkline ──
+    if last_7:
+        max_val = max(v for _, v in last_7) or 1
+        spark_blocks = " ▁▂▃▄▅▆▇█"
+        spark = ""
+        for date_str, val in last_7:
+            idx = int((val / max_val) * (len(spark_blocks) - 1))
+            spark += spark_blocks[idx]
+        days_text = "  ".join(
+            f"[dim]{d[5:]}[/dim] [cyan]{v:,}[/cyan]" for d, v in last_7[-3:]
+        )
+        hist_text = f"[bold]{spark}[/bold]   {days_text}"
+        root.add_row(Panel(hist_text, title="[bold]Last 7 Days", border_style="dim", padding=(0, 1)))
+
+    # ── Log tail ──
+    log_lines = snap["log_lines"]
+    if log_lines:
+        log_text = "\n".join(f"[dim]{line}[/dim]" for line in log_lines)
+    else:
+        log_text = "[dim]No log entries yet.[/dim]"
+    root.add_row(Panel(log_text, title="[bold]Recent Log", border_style="dim", padding=(0, 1)))
+
+    # Footer
+    root.add_row("[dim]  Press [bold]Ctrl+C[/bold] to stop[/dim]")
+
+    return root
 
 
-# ── Main daemon loop ──────────────────────────────────────────────────────────
+def _run_dashboard(ds: DashState) -> None:
+    """Main thread: render Rich Live dashboard until stop_event."""
+    from rich.live import Live
+    from rich.console import Console
 
-def _daemon_loop(config: dict, config_path: str) -> None:
-    """Run forever, firing sessions at the right times."""
+    console = Console()
+    started = datetime.datetime.now()
+
+    def _elapsed() -> str:
+        delta = datetime.datetime.now() - started
+        h, rem = divmod(int(delta.total_seconds()), 3600)
+        m, s = divmod(rem, 60)
+        if h:
+            return f"{h}h {m:02d}m {s:02d}s"
+        return f"{m:02d}m {s:02d}s"
+
+    with Live(console=console, refresh_per_second=0.5, screen=True) as live:
+        while not ds.stop_event.is_set():
+            snap = ds.snapshot()
+            snap["config_path"] = ds.config_path
+            try:
+                panel = _build_dashboard(snap, ds.config, _elapsed())
+                live.update(panel)
+            except Exception:
+                pass
+            ds.stop_event.wait(2)
+
+
+# ── Background (fork) mode ────────────────────────────────────────────────────
+
+def _bg_daemon_loop(config: dict, config_path: str) -> None:
+    """Simple loop for background (forked) mode — no Rich, logs to file."""
     tz = _resolve_tz(config)
     last_fired_date: Optional[datetime.date] = None
 
-    _log("=" * 60)
-    _log("TrustMeImWorking daemon started.")
-    mode = "Work-Simulation" if config.get("simulate_work") else "Random"
-    _log(f"Mode: {mode}  |  Config: {config_path}")
-    _log("=" * 60)
+    def _log(msg: str) -> None:
+        ts = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        print(f"[{ts}] {msg}", flush=True)
 
     def _handle_sigterm(signum, frame):
-        _log("Received SIGTERM — shutting down gracefully.")
+        _log("Received SIGTERM — shutting down.")
         _remove_pid(config_path)
         sys.exit(0)
 
     signal.signal(signal.SIGTERM, _handle_sigterm)
     signal.signal(signal.SIGINT,  _handle_sigterm)
 
+    _log("=" * 60)
+    _log("TrustMeImWorking background daemon started.")
+    mode = "Work-Simulation" if config.get("simulate_work") else "Random"
+    _log(f"Mode: {mode}  |  Config: {config_path}")
+    _log("=" * 60)
+
+    # Reuse DashState for its session logic but without dashboard
+    ds = DashState(config, config_path)
+    # Override log to use simple print
+    def _simple_log(msg: str) -> None:
+        _log(msg)
+        with ds._lock:
+            ds.log_lines.append(f"[{_ts()}] {msg}")
+        log_path = _log_path(config_path)
+        try:
+            with open(log_path, "a", encoding="utf-8") as f:
+                f.write(f"[{datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] {msg}\n")
+        except OSError:
+            pass
+    ds.log = _simple_log  # type: ignore[method-assign]
+
     while True:
         try:
+            ds.refresh_consumption()
             now_date = datetime.datetime.now(tz).date()
-
             if _should_fire_now(config, tz, last_fired_date):
-                _log(f"Firing session at {datetime.datetime.now(tz).strftime('%Y-%m-%d %H:%M:%S')}")
-                _run_session(config, config_path)
+                _log(f"Firing session at {datetime.datetime.now(tz).strftime('%H:%M:%S')}")
+                _run_session_with_state(config, config_path, ds)
                 last_fired_date = now_date
             else:
-                # Quiet tick — only log once per hour to avoid log spam
                 now = datetime.datetime.now(tz)
                 if now.minute == 0:
-                    _log(f"Heartbeat {now.strftime('%H:%M')} — waiting for next session window.")
-
+                    _log(f"Heartbeat {now.strftime('%H:%M')} — waiting.")
         except Exception as exc:
-            _log(f"ERROR in daemon loop: {exc}")
-
-        time.sleep(_seconds_until_next_check())
+            _log(f"ERROR: {exc}")
+        time.sleep(60)
 
 
 # ── Public API ────────────────────────────────────────────────────────────────
 
-def start(config: dict, config_path: str, foreground: bool = False) -> None:
+def start(config: dict, config_path: str, background: bool = False) -> None:
     """
     Start the daemon.
 
-    foreground=True  → run in the current process (blocks).
-    foreground=False → fork to background, write PID file, return immediately.
+    background=False (default) → foreground dashboard mode:
+      daemon loop runs in a thread, Rich Live dashboard in main thread.
+
+    background=True → fork to background, silent, logs to file.
     """
     config_path = str(Path(config_path).resolve())
 
@@ -331,34 +615,50 @@ def start(config: dict, config_path: str, foreground: bool = False) -> None:
         print_warning(f"Daemon already running (PID {pid}). Use 'tmw stop' to stop it.")
         return
 
-    if foreground:
-        print_info("Running in foreground mode. Press Ctrl+C to stop.")
-        _write_pid(config_path)
-        try:
-            _daemon_loop(config, config_path)
-        finally:
-            _remove_pid(config_path)
-        return
+    if background:
+        if sys.platform == "win32":
+            print_info("Background mode not supported on Windows — running dashboard mode.")
+            background = False
+        else:
+            pid = os.fork()
+            if pid > 0:
+                log = _log_path(config_path)
+                print_success(f"Daemon started in background (PID {pid}).")
+                print_info(f"Logs: {log}")
+                print_info("Stop: tmw stop")
+                return
+            os.setsid()
+            _write_pid(config_path)
+            _redirect_output(config_path)
+            _bg_daemon_loop(config, config_path)
+            return
 
-    # Fork to background
-    pid = os.fork()
-    if pid > 0:
-        # Parent process — report and exit
-        log = _log_path(config_path)
-        print_success(f"Daemon started in background (PID {pid}).")
-        print_info(f"Logs: {log}")
-        print_info(f"Stop: tmw stop --config {config_path}")
-        return
-
-    # Child process — become daemon
-    os.setsid()
+    # ── Foreground dashboard mode ──────────────────────────────────────────────
     _write_pid(config_path)
-    _redirect_output(config_path)
-    _daemon_loop(config, config_path)
+    ds = DashState(config, config_path)
+    ds.refresh_consumption()
+
+    # Start daemon loop in background thread
+    t = threading.Thread(target=_daemon_thread, args=(ds,), daemon=True)
+    t.start()
+
+    try:
+        _run_dashboard(ds)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        ds.stop_event.set()
+        t.join(timeout=3)
+        _remove_pid(config_path)
+        # Print final summary after Live exits
+        snap = ds.snapshot()
+        print_success(
+            f"Stopped. Session: today {snap['today']:,} / {snap['daily_target']:,} tokens  |  "
+            f"week {snap['week']:,} tokens"
+        )
 
 
 def stop(config_path: str) -> None:
-    """Send SIGTERM to the running daemon."""
     config_path = str(Path(config_path).resolve())
     pid = _read_pid(config_path)
 
@@ -368,7 +668,6 @@ def stop(config_path: str) -> None:
 
     try:
         os.kill(pid, signal.SIGTERM)
-        # Wait up to 5 seconds for the process to exit
         for _ in range(50):
             time.sleep(0.1)
             if not _is_running(config_path):
@@ -383,10 +682,8 @@ def stop(config_path: str) -> None:
 
 
 def status(config_path: str) -> None:
-    """Print daemon status."""
     config_path = str(Path(config_path).resolve())
     log = _log_path(config_path)
-
     if _is_running(config_path):
         pid = _read_pid(config_path)
         print_success(f"Daemon is RUNNING (PID {pid}).")
@@ -398,15 +695,11 @@ def status(config_path: str) -> None:
 
 
 def logs(config_path: str, lines: int = 50) -> None:
-    """Print the last N lines of the log file."""
     config_path = str(Path(config_path).resolve())
     log = _log_path(config_path)
-
     if not log.exists():
         print_warning("No log file found. Has the daemon been started?")
         return
-
     all_lines = log.read_text(encoding="utf-8", errors="replace").splitlines()
-    tail = all_lines[-lines:]
-    for line in tail:
+    for line in all_lines[-lines:]:
         print(line)

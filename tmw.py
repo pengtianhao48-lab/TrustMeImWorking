@@ -62,15 +62,11 @@ def cmd_init(args):
 
 
 def cmd_start(args):
-    print_banner()
+    if getattr(args, 'background', False):
+        print_banner()
     config = _load_config(args.config)
-
-    if sys.platform == "win32" and not args.foreground:
-        print_info("Background daemon not supported on Windows — running in foreground.")
-        args.foreground = True
-
     from trustmework import daemon
-    daemon.start(config, args.config, foreground=args.foreground)
+    daemon.start(config, args.config, background=getattr(args, 'background', False))
 
 
 def cmd_stop(args):
@@ -188,8 +184,8 @@ def build_parser() -> argparse.ArgumentParser:
         epilog=f"""
 Quick start (3 commands):
   tmw wizard      # one-time setup, writes {DEFAULT_CONFIG}
-  tmw start       # start background daemon
-  tmw status      # check progress
+  tmw start       # start daemon + live dashboard (Ctrl+C to stop)
+  tmw start -b    # start silently in background
 
 Other commands (all use {DEFAULT_CONFIG} by default):
   tmw stop
@@ -218,11 +214,11 @@ Other commands (all use {DEFAULT_CONFIG} by default):
     # start
     p_start = sub.add_parser(
         "start",
-        help="Start persistent daemon (auto-consumes tokens per schedule)",
+        help="Start daemon with live dashboard (default) or silent background",
     )
     _cfg(p_start)
-    p_start.add_argument("--foreground", "-f", action="store_true",
-                         help="Run in foreground instead of background")
+    p_start.add_argument("--background", "-b", action="store_true",
+                         help="Run silently in background instead of showing dashboard")
 
     # stop
     p_stop = sub.add_parser("stop", help="Stop the running daemon")
