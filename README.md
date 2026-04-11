@@ -87,7 +87,9 @@ pip3 install -r requirements.txt
 
 ## ⚡ 快速上手
 
-### 方式一：交互式向导（推荐新手）
+### 方式一：向导 + 一键启动（推荐）
+
+**第一步：运行向导，生成配置文件**
 
 ```bash
 python tmw.py wizard
@@ -96,9 +98,40 @@ python3 tmw.py wizard
 ```
 
 它会一步一步问你：用哪个平台、API Key 是多少、每周要消耗多少 tokens……  
-跟着填就行，最后自动生成配置文件。
+跟着填就行，最后自动生成配置文件（默认 `config.json`）。
 
-### 方式二：手动配置（推荐老手）
+**第二步：启动后台常驻进程**
+
+```bash
+python tmw.py start --config config.json
+```
+
+就这一条命令。它会：
+
+- 在后台静默运行，不占用终端
+- 按你的配置自动判断当前是否应该消耗（工作时间内才消耗，周末不消耗，已达标不再消耗）
+- 所有运行日志自动写入 `config.log`
+
+**第三步：查看运行状态**
+
+```bash
+# 查看消耗统计 + daemon 是否在跑
+python tmw.py status --config config.json
+
+# 实时查看日志
+python tmw.py logs --config config.json
+python tmw.py logs --config config.json --lines 100  # 显示最近 100 行
+```
+
+**第四步：停止**
+
+```bash
+python tmw.py stop --config config.json
+```
+
+---
+
+### 方式二：手动配置（老手）
 
 **第一步：生成配置模板**
 
@@ -108,8 +141,6 @@ python tmw.py init --config my_config.json --mode random
 
 # 模拟工作模式
 python tmw.py init --config my_config.json --mode work
-
-# Mac/Linux 如果 python 不可用，把上面所有 python 换成 python3
 ```
 
 **第二步：编辑配置文件**
@@ -139,34 +170,13 @@ python tmw.py init --config my_config.json --mode work
 python tmw.py run --config my_config.json --dry-run
 ```
 
-加了 `--dry-run` 不会真的调用 API，只是告诉你"如果运行，会发生什么"。  
-确认逻辑没问题后，去掉 `--dry-run` 正式运行：
+**第四步：启动常驻进程**
 
 ```bash
-python tmw.py run --config my_config.json
+python tmw.py start --config my_config.json
 ```
 
-> **提示：** 如果你的电脑只有 `python3` 命令，把所有 `python tmw.py` 替换成 `python3 tmw.py` 即可，功能完全一样。
-
-**第四步：设置自动运行（最重要！）**
-
-手动跑一次没意义，要让它每天自动跑才行：
-
-```bash
-python tmw.py scheduler --install --config my_config.json
-# 或
-python3 tmw.py scheduler --install --config my_config.json
-```
-
-这会自动设置定时任务，每 30 分钟检查一次，在合适的时间自动消耗 tokens。  
-**设置完就不用管了，它会在后台默默工作。**
-
-**第五步：查看消耗统计**
-
-```bash
-python tmw.py status --config my_config.json
-```
-
+> **提示：** 如果你的电脑只有 `python3` 命令，把所有 `python tmw.py` 替换成 `python3 tmw.py` 即可。
 ---
 
 ## 🔑 去哪里获取 API Key？

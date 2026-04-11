@@ -17,7 +17,7 @@ import random
 import subprocess
 import sys
 import time
-from typing import Any
+from typing import Any, Dict, List, Optional
 
 # Python 3.9+ has zoneinfo in stdlib; 3.8 needs backports.zoneinfo
 try:
