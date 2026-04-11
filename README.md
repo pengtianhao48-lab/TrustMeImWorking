@@ -120,7 +120,7 @@ python tmw.py init --config my_config.json --mode work
 {
   "platform":   "deepseek",     // 平台名，见下方支持列表
   "api_key":    "sk-xxxxxxxx",  // 你的 API Key（必填）
-  "model":      null,           // 留 null 自动选最便宜的模型
+  "model":      null,           // 留 null 自动使用平台最新旗舰模型（token 消耗最大）
   "weekly_min": 50000,          // 每周消耗下限（tokens）
   "weekly_max": 80000,          // 每周消耗上限（tokens）
   "simulate_work": true,        // true=模拟工作，false=随机模式
@@ -180,7 +180,7 @@ python tmw.py status --config my_config.json
 | OpenAI | [platform.openai.com](https://platform.openai.com) | 需要梯子 |
 | Claude | [console.anthropic.com](https://console.anthropic.com) | 需要梯子 |
 
-> **小贴士：** 模拟消耗时建议选便宜的模型（如 DeepSeek、Kimi），每次调用花费不到 0.01 元，一周下来几块钱搞定。
+> **小贴士：** 默认会使用各平台最新旗舰模型，每次调用 token 消耗更大，更容易达标。如果想控制费用，可以手动填写 `model` 字段指定较便宜的模型。
 
 ---
 
@@ -359,7 +359,7 @@ python tmw.py status --config config.json                    # Check stats
   "platform":        "deepseek",   // Run: python tmw.py platforms
   "api_key":         "sk-...",     // Your API key
   "base_url":        null,         // Override for corporate gateways
-  "model":           null,         // null = cheapest model for the platform
+  "model":           null,         // null = latest flagship model (maximises token usage)
   "weekly_min":      50000,        // Weekly token budget lower bound
   "weekly_max":      80000,        // Weekly token budget upper bound
   "simulate_work":   true,         // true = work-sim, false = random

@@ -32,33 +32,34 @@ PLATFORM_URLS: dict[str, str] = {
     "custom":      None,
 }
 
-# Default cheapest/fastest model for each platform
+# Default flagship model for each platform (latest, highest-capability)
+# Using the flagship model maximises token consumption per call, which is the goal.
 PLATFORM_DEFAULT_MODELS: dict[str, str] = {
-    "openai":      "gpt-4o-mini",
-    "claude":      "claude-3-haiku-20240307",
-    "anthropic":   "claude-3-haiku-20240307",
-    "gemini":      "gemini-1.5-flash",
-    "kimi":        "moonshot-v1-8k",
-    "moonshot":    "moonshot-v1-8k",
-    "deepseek":    "deepseek-chat",
-    "qwen":        "qwen-turbo",
-    "tongyi":      "qwen-turbo",
-    "zhipu":       "glm-4-flash",
-    "glm":         "glm-4-flash",
-    "baidu":       "ernie-speed-128k",
-    "ernie":       "ernie-speed-128k",
-    "spark":       "lite",
-    "iflytek":     "lite",
-    "minimax":     "abab5.5s-chat",
-    "yi":          "yi-lightning",
-    "lingyiwanwu": "yi-lightning",
-    "stepfun":     "step-1-flash",
-    "groq":        "llama-3.1-8b-instant",
-    "together":    "meta-llama/Llama-3-8b-chat-hf",
-    "mistral":     "mistral-small-latest",
-    "cohere":      "command-r",
-    "perplexity":  "llama-3.1-sonar-small-128k-online",
-    "siliconflow": "Qwen/Qwen2.5-7B-Instruct",
+    "openai":      "gpt-4o",
+    "claude":      "claude-opus-4-5",
+    "anthropic":   "claude-opus-4-5",
+    "gemini":      "gemini-2.5-pro",
+    "kimi":        "moonshot-v1-128k",
+    "moonshot":    "moonshot-v1-128k",
+    "deepseek":    "deepseek-reasoner",
+    "qwen":        "qwen-max",
+    "tongyi":      "qwen-max",
+    "zhipu":       "glm-4-plus",
+    "glm":         "glm-4-plus",
+    "baidu":       "ernie-4.5-turbo-128k",
+    "ernie":       "ernie-4.5-turbo-128k",
+    "spark":       "4.0Ultra",
+    "iflytek":     "4.0Ultra",
+    "minimax":     "abab6.5s-chat",
+    "yi":          "yi-large",
+    "lingyiwanwu": "yi-large",
+    "stepfun":     "step-2-16k",
+    "groq":        "llama-3.3-70b-versatile",
+    "together":    "meta-llama/Llama-3.3-70B-Instruct-Turbo",
+    "mistral":     "mistral-large-latest",
+    "cohere":      "command-r-plus",
+    "perplexity":  "llama-3.1-sonar-large-128k-online",
+    "siliconflow": "deepseek-ai/DeepSeek-R1",
 }
 
 # Human-readable display names
@@ -106,8 +107,8 @@ def get_base_url(platform: str, custom_url: str | None = None) -> str:
 
 
 def get_default_model(platform: str) -> str:
-    """Get the default (cheapest) model for a platform."""
-    return PLATFORM_DEFAULT_MODELS.get(platform.lower(), "gpt-4o-mini")
+    """Get the default flagship model for a platform."""
+    return PLATFORM_DEFAULT_MODELS.get(platform.lower(), "gpt-4o")
 
 
 def list_platforms() -> list[str]:
