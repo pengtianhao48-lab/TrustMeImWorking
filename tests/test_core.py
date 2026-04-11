@@ -32,12 +32,12 @@ def test_get_base_url_custom_override():
 
 def test_get_default_model_deepseek():
     model = get_default_model("deepseek")
-    assert model == "deepseek-chat"
+    assert model == "deepseek-reasoner"
 
 
 def test_get_default_model_unknown_fallback():
     model = get_default_model("unknown_platform_xyz")
-    assert model == "gpt-4o-mini"
+    assert model == "gpt-4o"
 
 
 # ── Config tests ──────────────────────────────────────────────────────────────
