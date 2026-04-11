@@ -218,15 +218,56 @@ python tmw.py status --config my_config.json
 
 以一个后端工程师（09:00~19:00）为例，实际运行时生成的 prompt 长这样：
 
+**工程师角色** — 自动生成带代码上下文的真实开发场景，模拟 Claude Code / Cursor 使用方式：
+
 ```
-✓ How can I optimize a SQL query in PostgreSQL to reduce latency for fetching large datasets?
-✓ What is the best way to implement JWT authentication with token expiration and refresh?
-✓ How do I set up SQLAlchemy connection pooling in my FastAPI application?
-✓ Can you help me write a Pydantic model schema that validates nested JSON input?
-✓ What are common debugging techniques to identify slow API response times?
+[Prompt 1]
+I'm seeing that this endpoint in `src/api/users.py` occasionally hangs and times
+out when fetching users with lots of associated posts. I suspect it's caused by
+the nested queries. Here's the relevant code:
+
+    @router.get("/users/{user_id}")
+    def get_user(user_id: int, db: Session = Depends(get_db)):
+        user = db.query(User).filter(User.id == user_id).first()
+        posts = db.query(Post).filter(Post.user_id == user_id).all()
+        return {"user": user, "posts": posts}  # N+1 query issue
+
+How do I fix this with SQLAlchemy eager loading to avoid the N+1 problem?
+
+[Prompt 2]
+I'm trying to add JWT token blacklist support in `src/auth/jwt.py`. The code
+below decodes tokens but doesn't support revocation. How do I add a Redis-backed
+blacklist without breaking the existing auth flow?
+
+    def verify_token(token: str) -> dict:
+        try:
+            payload = jwt.decode(token, SECRET_KEY, algorithms=["HS256"])
+            return payload
+        except jwt.ExpiredSignatureError:
+            raise HTTPException(status_code=401, detail="Token expired")
+
+[Prompt 3]
+Getting a `KeyError: 'user_id'` in production on `src/services/order_service.py`
+line 47. This only happens under high concurrency. Here's the relevant section:
+
+    def process_order(order_id: int, context: dict):
+        user_id = context["user_id"]   # <-- crashes here occasionally
+        order = Order.get(order_id)
+        ...
+
+Is this a race condition? How do I make this thread-safe?
+```
+
+**非工程师角色**（产品经理、设计师、分析师等）— 生成与工作高度相关的问题式 prompt：
+
+```
+✓ What are the emerging trends in our industry that could impact our product roadmap?
+✓ Draft a concise update email for the sales team summarizing key product improvements.
+✓ Generate a prioritized list of customer feedback themes from our recent NPS survey.
 ```
 
 这些 prompt 是**由 AI 根据你的工作描述实时生成的**，每次都不一样，不是固定模板。  
+工具会自动识别角色类型（工程师 vs 非工程师），选择对应的生成策略。  
 时间分布如下：
 
 ```

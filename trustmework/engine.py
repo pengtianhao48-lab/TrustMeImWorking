@@ -60,18 +60,68 @@ RANDOM_PROMPTS = [
     "What is a deadlock and how can it be prevented?",
 ]
 
-# ── Work-mode prompt template ─────────────────────────────────────────────────
+# ── Work-mode prompt templates ───────────────────────────────────────────────
 
+# Keywords that identify engineering / technical roles
+_ENGINEER_KEYWORDS = {
+    "engineer", "developer", "programmer", "coder", "architect",
+    "backend", "frontend", "fullstack", "full-stack", "full stack",
+    "devops", "sre", "platform", "infrastructure", "infra",
+    "data scientist", "ml engineer", "machine learning", "ai engineer",
+    "software", "系统", "工程师", "开发", "程序员", "后端", "前端",
+    "运维", "架构", "算法",
+}
+
+
+def _is_engineer_role(job_desc: str) -> bool:
+    """Return True if the job description matches an engineering / technical role."""
+    lower = job_desc.lower()
+    return any(kw in lower for kw in _ENGINEER_KEYWORDS)
+
+
+# Template for non-engineer roles (PM, designer, analyst, etc.)
 _WORK_PROMPT_TEMPLATE = """\
 You are a {job_description}.
 Generate 6 specific, realistic questions you would ask an AI assistant during your typical workday.
 Requirements:
 - Questions must be directly relevant to your role
-- Mix of technical, analytical, and communication tasks
+- Mix of strategic, analytical, and communication tasks
 - Each question on its own line, no numbering or bullet points
 - Output only the questions, nothing else
 
 Questions:"""
+
+# Template for engineer roles — generates prompts WITH code context
+_ENGINEER_PROMPT_TEMPLATE = """\
+You are a {job_description}.
+Generate 5 realistic AI assistant prompts that a developer would send during a real workday.
+
+Each prompt MUST:
+- Include a realistic file path (e.g. src/api/auth.py, services/UserService.ts)
+- Include an actual code snippet (10-25 lines) that looks like real production code
+- Describe a specific problem: a bug, a performance issue, a refactor request, a code review, or a new feature
+- Be written in first person, as if pasting code into Claude/ChatGPT
+- Feel like a real developer asking for help, NOT a textbook question
+
+Format each prompt as a complete message the developer would send, starting directly with the context.
+Separate prompts with a line containing only "---".
+Output only the prompts, nothing else.
+
+Example style (do NOT copy this, generate role-appropriate ones):
+```
+I'm getting a 500 error in production on this endpoint. The error is `NullPointerException` at line 47.
+Here's the relevant code from `src/handlers/payment.py`:
+
+```python
+def process_payment(order_id: str, amount: float):
+    order = db.query(Order).filter(Order.id == order_id).first()
+    # BUG: order can be None if the ID is invalid
+    total = order.amount + amount
+    ...
+```
+
+How do I add proper null checking and return a 404 instead?
+```"""
 
 
 # ── JWT token cache ───────────────────────────────────────────────────────────
@@ -363,20 +413,45 @@ def _current_segment(now_time: datetime.time, segments):
 
 
 def _generate_work_prompts(client, model: str, job_desc: str, token_field: str | None = None) -> list[str]:
-    """Ask the LLM to generate job-relevant prompts."""
-    meta = _WORK_PROMPT_TEMPLATE.format(job_description=job_desc)
+    """
+    Ask the LLM to generate job-relevant prompts.
+    For engineering roles, generates prompts with real code context (file paths,
+    code snippets, error messages) to mimic Claude Code / Cursor usage patterns.
+    For other roles, generates question-style prompts.
+    """
+    is_eng = _is_engineer_role(job_desc)
+
+    if is_eng:
+        meta = _ENGINEER_PROMPT_TEMPLATE.format(job_description=job_desc)
+        max_tok = 2000  # code snippets need more tokens
+    else:
+        meta = _WORK_PROMPT_TEMPLATE.format(job_description=job_desc)
+        max_tok = 600
+
     try:
         resp = client.chat.completions.create(
             model=model,
             messages=[{"role": "user", "content": meta}],
-            max_tokens=600,
+            max_tokens=max_tok,
         )
-        lines = (resp.choices[0].message.content or "").strip().splitlines()
-        prompts = [l.strip() for l in lines if l.strip()]
-        return prompts[:6] if prompts else random.sample(RANDOM_PROMPTS, 6)
+        raw = (resp.choices[0].message.content or "").strip()
+
+        if is_eng:
+            # Split on "---" separator; each chunk is one full prompt
+            chunks = [c.strip() for c in raw.split("---") if c.strip()]
+            prompts = chunks[:5] if chunks else None
+            if not prompts:
+                # Fallback: treat each non-empty paragraph as a prompt
+                prompts = [p.strip() for p in raw.split("\n\n") if len(p.strip()) > 50]
+            return prompts[:5] if prompts else random.sample(RANDOM_PROMPTS, 5)
+        else:
+            lines = raw.splitlines()
+            prompts = [l.strip() for l in lines if l.strip()]
+            return prompts[:6] if prompts else random.sample(RANDOM_PROMPTS, 6)
+
     except Exception as exc:
         print_warning(f"Could not generate work prompts ({exc}), using random pool.")
-        return random.sample(RANDOM_PROMPTS, 6)
+        return random.sample(RANDOM_PROMPTS, 5 if is_eng else 6)
 
 
 # ── Public entry points ───────────────────────────────────────────────────────
