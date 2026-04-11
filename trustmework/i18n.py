@@ -87,6 +87,10 @@ _STRINGS: dict[str, dict[str, str]] = {
         "daemon_not_running":   "Daemon: not running  (use 'tmw start' to start)",
         "tip_run_wizard":       "Tip: run 'tmw wizard' first to create config.json",
 
+        # session sub-status
+        "generating_prompts":   "Generating work prompts\u2026",
+        "sleeping_label":       "Sleeping {secs}s",
+
         # wizard next steps
         "next_steps_title":     "Next steps:",
         "next_step_start":      "  1. Start:       {py} tmw.py start",
@@ -161,6 +165,10 @@ _STRINGS: dict[str, dict[str, str]] = {
         "daemon_running":       "\u5b88\u62a4\u8fdb\u7a0b\uff1a\u8fd0\u884c\u4e2d\uff08PID {pid}\uff09",
         "daemon_not_running":   "\u5b88\u62a4\u8fdb\u7a0b\uff1a\u672a\u8fd0\u884c\uff08\u8fd0\u884c 'tmw start' \u542f\u52a8\uff09",
         "tip_run_wizard":       "\u63d0\u793a\uff1a\u8bf7\u5148\u8fd0\u884c 'tmw wizard' \u521b\u5efa config.json",
+
+        # session sub-status
+        "generating_prompts":   "\u6b63\u5728\u751f\u6210\u5de5\u4f5c prompt\u2026",
+        "sleeping_label":       "\u7b49\u5f85 {secs} \u79d2",
 
         # wizard next steps
         "next_steps_title":     "\u4e0b\u4e00\u6b65\uff1a",

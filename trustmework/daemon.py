@@ -131,6 +131,8 @@ class DashState:
         self.session_tokens: int = 0
         self.session_target: int = 0
         self.last_prompt: str = ""
+        self.status_msg: str = ""          # e.g. "Generating prompts…" or "Sleeping 86s"
+        self.sleep_until: Optional[datetime.datetime] = None  # set during inter-call sleep
 
         # Timing
         self.started_at: datetime.datetime = datetime.datetime.now()
@@ -185,6 +187,8 @@ class DashState:
                 "session_tokens": self.session_tokens,
                 "session_target": self.session_target,
                 "last_prompt": self.last_prompt,
+                "status_msg": self.status_msg,
+                "sleep_until": self.sleep_until,
                 "started_at": self.started_at,
                 "next_check_at": self.next_check_at,
                 "last_fired": self.last_fired,
@@ -509,9 +513,14 @@ def _work_session(config, config_path, tz, state, token_field, model, weekly_tar
         ds.session_target = seg_tgt
 
     client = _build_client(config)
-    ds.log("Generating work prompts…")
+    ds.log("Generating work prompts\u2026")
+    with ds._lock:
+        ds.status_msg = i18n.t("generating_prompts")
+        ds.sleep_until = None
     work_prompts = _generate_work_prompts(client, model, job_desc, token_field)
     ds.log(f"Generated {len(work_prompts)} prompts.")
+    with ds._lock:
+        ds.status_msg = ""
 
     pool = (work_prompts * 20)
     _r.shuffle(pool)
@@ -524,6 +533,8 @@ def _work_session(config, config_path, tz, state, token_field, model, weekly_tar
             break
         with ds._lock:
             ds.last_prompt = prompt[:80]
+            ds.status_msg = ""
+            ds.sleep_until = None
         tokens, err = _call_api(client, model, prompt, token_field)
         if err:
             ds.log(f"  API error: {err}")
@@ -536,11 +547,20 @@ def _work_session(config, config_path, tz, state, token_field, model, weekly_tar
             ds.log(f"  +{tokens:,} tk  [{prompt[:50]}\u2026]  total={total:,}/{seg_tgt:,}")
         if total < seg_tgt and not ds.stop_event.is_set():
             sleep = _r.randint(30, 180)
+            wake = datetime.datetime.now() + datetime.timedelta(seconds=sleep)
+            with ds._lock:
+                ds.sleep_until = wake
+                ds.status_msg = i18n.t("sleeping_label", secs=sleep)
             ds.log(f"  Sleeping {sleep}s\u2026")
             ds.stop_event.wait(sleep)
+            with ds._lock:
+                ds.sleep_until = None
+                ds.status_msg = ""
 
     with ds._lock:
         ds.session_active = False
+        ds.status_msg = ""
+        ds.sleep_until = None
     ds.log(f"Session done. +{total:,} tokens.")
 
 
@@ -686,15 +706,34 @@ def _build_dashboard(snap: dict, config: dict, elapsed: str) -> "Table":
         s_pct     = min(snap["session_tokens"] / max(snap["session_target"], 1), 1.0)
         day_pct   = min(today / max(daily_tgt, 1), 1.0)
         day_color = "green" if day_pct >= 1.0 else "cyan"
+
+        # Build sub-status line: generating / sleeping countdown / prompt
+        status_msg  = snap.get("status_msg", "")
+        sleep_until = snap.get("sleep_until")
+        if status_msg and sleep_until:
+            # Sleeping — show live countdown
+            secs_left = max(0, int((sleep_until - datetime.datetime.now()).total_seconds()))
+            mins_s, secs_s = divmod(secs_left, 60)
+            if mins_s > 0:
+                countdown = i18n.t("next_request_mins", mins=mins_s, secs=secs_s)
+            else:
+                countdown = i18n.t("next_request_secs", secs=secs_s)
+            sub_line = f"[dim]\u23f3 {i18n.t('sleeping_label', secs=0).split()[0]}  {countdown}[/dim]"
+        elif status_msg:
+            # Generating prompts or other blocking state
+            sub_line = f"[dim]\u29d7 {status_msg}[/dim]"
+        else:
+            sub_line = f"[dim]{i18n.t('prompt_label')}: {snap['last_prompt'][:70]}[/dim]"
+
         sess_text = (
-            f"[yellow]● {i18n.t('active_label')}[/yellow]  "
+            f"[yellow]\u25cf {i18n.t('active_label')}[/yellow]  "
             f"{i18n.t('this_session')}: [yellow]{snap['session_tokens']:,}[/yellow]"
             f" / {snap['session_target']:,}  ({s_pct:.0%})\n"
             f"[dim]{bar(s_pct, BAR)}[/dim]\n"
             f"{i18n.t('todays_progress')}:  [{day_color}]{today:,}[/{day_color}]"
             f" / {daily_tgt:,}  ({day_pct:.0%})\n"
             f"[{day_color}]{bar(day_pct, BAR)}[/{day_color}]\n"
-            f"[dim]{i18n.t('prompt_label')}: {snap['last_prompt'][:70]}[/dim]"
+            f"{sub_line}"
         )
         sess_border = "yellow"
     elif today_done:
