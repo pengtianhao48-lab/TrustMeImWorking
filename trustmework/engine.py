@@ -1,5 +1,5 @@
 """
-Core consumption engine — handles both Random and Work-Simulation modes.
+Core consumption engine — handles Immediate, Spread, and Work-Simulation modes.
 
 Enterprise gateway support:
   - extra_headers   : inject arbitrary HTTP headers into every request
@@ -465,9 +465,10 @@ def _generate_work_prompts(client, model: str, job_desc: str, token_field: Optio
 
 # ── Public entry points ───────────────────────────────────────────────────────
 
-def run_random_mode(config: dict, config_path: str, dry_run: bool = False) -> None:
+def run_immediate_mode(config: dict, config_path: str, dry_run: bool = False) -> None:
     """
-    Random mode: consume tokens evenly throughout the day using random prompts.
+    Immediate mode: start consuming the daily budget right now, as fast as
+    reasonably possible (short sleeps between calls to avoid rate-limiting).
     Daily target = weekly_target / 7  (±5%).
     """
     tz = _resolve_tz(config)
@@ -479,14 +480,14 @@ def run_random_mode(config: dict, config_path: str, dry_run: bool = False) -> No
     today = st.today_consumed(state, tz)
     remaining = daily_tgt - today
 
-    print_mode_header("Random Mode", daily_tgt, today, weekly_target)
+    print_mode_header("Immediate Mode", daily_tgt, today, weekly_target)
 
     if remaining <= 0:
         print_skipped("Daily target already reached.")
         return
 
     if dry_run:
-        print_info(f"[DRY RUN] Would consume ~{remaining:,} tokens. No API calls made.")
+        print_info(f"[DRY RUN] Would consume ~{remaining:,} tokens immediately. No API calls made.")
         return
 
     client = _build_client(config)
@@ -509,8 +510,81 @@ def run_random_mode(config: dict, config_path: str, dry_run: bool = False) -> No
             st.record(config_path, state, tokens, tz)
             print_api_call(prompt, tokens, total, remaining)
         if total < remaining:
-            sleep = random.randint(10, 60)
+            # Short sleep only — just enough to avoid rate-limit errors
+            sleep = random.randint(2, 8)
             time.sleep(sleep)
+
+    print_success(f"Done! Consumed {total:,} tokens this run.")
+
+
+def run_spread_mode(config: dict, config_path: str, dry_run: bool = False) -> None:
+    """
+    Spread mode: distribute the daily budget evenly across the remaining hours
+    of the current day (or across the full 24 h for subsequent days).
+    Fires a mini-session every N minutes so the total adds up by midnight.
+    Daily target = weekly_target / 7  (±5%).
+    """
+    tz = _resolve_tz(config)
+    state = st.load(config_path)
+    token_field = config.get("token_field") or None
+
+    weekly_target = random.randint(config["weekly_min"], config["weekly_max"])
+    daily_tgt = _daily_target(weekly_target, 7)
+    today = st.today_consumed(state, tz)
+    remaining = daily_tgt - today
+
+    now = datetime.datetime.now(tz)
+    # Seconds left in today (capped at 24 h)
+    midnight = (now + datetime.timedelta(days=1)).replace(
+        hour=0, minute=0, second=0, microsecond=0
+    )
+    secs_left = max((midnight - now).total_seconds(), 60)
+
+    print_mode_header("Spread Mode", daily_tgt, today, weekly_target)
+    print_info(f"Seconds remaining today: {int(secs_left):,}  (~{secs_left/3600:.1f} h)")
+
+    if remaining <= 0:
+        print_skipped("Daily target already reached.")
+        return
+
+    if dry_run:
+        print_info(f"[DRY RUN] Would spread ~{remaining:,} tokens over {secs_left/3600:.1f} h. No API calls made.")
+        return
+
+    client = _build_client(config)
+    model = config.get("model") or get_default_model(config.get("platform", "openai"))
+    print_info(f"Using model: {model}")
+    if token_field:
+        print_info(f"Token field: {token_field}")
+
+    # Estimate tokens per call, then compute inter-call sleep
+    est_tokens_per_call = 400  # conservative estimate
+    n_calls_needed = max(remaining // est_tokens_per_call, 1)
+    sleep_between = max(int(secs_left / n_calls_needed), 5)
+    print_info(f"Estimated {n_calls_needed} calls, ~{sleep_between}s apart.")
+
+    total = 0
+    prompts = RANDOM_PROMPTS.copy()
+    random.shuffle(prompts)
+    pool = prompts * ((remaining // 200) + 5)
+
+    for prompt in pool:
+        if total >= remaining:
+            break
+        tokens = _call_api(client, model, prompt, token_field)
+        if tokens:
+            total += tokens
+            st.record(config_path, state, tokens, tz)
+            print_api_call(prompt, tokens, total, remaining)
+            # Recalculate sleep based on actual tokens per call
+            remaining_tokens = remaining - total
+            if remaining_tokens > 0:
+                now2 = datetime.datetime.now(tz)
+                secs_left2 = max((midnight - now2).total_seconds(), 5)
+                calls_left = max(remaining_tokens // max(tokens, 1), 1)
+                sleep_between = max(int(secs_left2 / calls_left), 5)
+        if total < remaining:
+            time.sleep(sleep_between)
 
     print_success(f"Done! Consumed {total:,} tokens this run.")
 

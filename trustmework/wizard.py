@@ -242,14 +242,35 @@ def run_wizard() -> None:
 
     # ── Step 6: Run Mode ──────────────────────────────────────────────────────
     _section("Step 6: Run Mode")
-    print("  Random mode   — spread usage evenly throughout the day (24 h)")
-    print("  Work-sim mode — consume only during working hours, with")
-    print("                  job-relevant prompts and organic pacing\n")
-    simulate_work = _ask_bool(
-        "Enable work-simulation mode?",
-        default=False,
-        hint="Recommended if your platform usage is monitored for work-hour patterns.",
-    )
+    print("  Choose how TrustMeImWorking consumes your daily token budget:\n")
+    print("  1) immediate  — Start consuming right now (today), then every day at 00:00.")
+    print("                  Finishes the daily budget as fast as possible.")
+    print("                  Best for: you just want it done quickly.\n")
+    print("  2) spread     — Distribute today's budget evenly across the remaining hours,")
+    print("                  then spread each future day's budget across the full 24 h.")
+    print("                  Calls are spaced so the quota is reached near midnight.")
+    print("                  Best for: natural-looking, time-distributed usage.\n")
+    print("  3) work       — Consume only during working hours (weekdays), using")
+    print("                  job-relevant prompts and organic pacing.")
+    print("                  Best for: mimicking real work activity patterns.\n")
+
+    mode_raw = _ask(
+        "Run mode [default=immediate]",
+        default="immediate",
+        required=False,
+        hint="Enter 1/immediate, 2/spread, or 3/work.",
+    ).strip().lower()
+    if mode_raw in ("1", "immediate", ""):
+        mode = "immediate"
+    elif mode_raw in ("2", "spread"):
+        mode = "spread"
+    elif mode_raw in ("3", "work"):
+        mode = "work"
+    else:
+        print("  Unrecognised option, defaulting to 'immediate'.")
+        mode = "immediate"
+
+    simulate_work = (mode == "work")
 
     config = {
         "platform":      platform,
@@ -258,10 +279,11 @@ def run_wizard() -> None:
         "model":         model,
         "weekly_min":    weekly_min,
         "weekly_max":    weekly_max,
+        "mode":          mode,
         "simulate_work": simulate_work,
     }
 
-    # ── Step 7: Work Schedule (work-sim only) ─────────────────────────────────
+    # ── Step 7: Work Schedule (work mode only) ─────────────────────────────────────────
     if simulate_work:
         _section("Step 7: Work Schedule")
         job_desc   = _ask(

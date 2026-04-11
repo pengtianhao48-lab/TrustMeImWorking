@@ -186,35 +186,50 @@ class DashState:
 
 # ── Consumption helpers ───────────────────────────────────────────────────────
 
-def _random_fire_time(tz) -> datetime.time:
-    today = datetime.datetime.now(tz).date()
-    key = str(today)
-    if not hasattr(_random_fire_time, "_cache"):
-        _random_fire_time._cache = {}  # type: ignore[attr-defined]
-    if key not in _random_fire_time._cache:  # type: ignore[attr-defined]
-        h = random.randint(8, 21)
-        m = random.randint(0, 59)
-        _random_fire_time._cache[key] = datetime.time(h, m)  # type: ignore[attr-defined]
-        _random_fire_time._cache = {k: v for k, v in _random_fire_time._cache.items()  # type: ignore[attr-defined]
-                                     if k >= str(today)}
-    return _random_fire_time._cache[key]  # type: ignore[attr-defined]
+def _mode(config: dict) -> str:
+    """Return 'immediate', 'spread', or 'work'."""
+    if config.get("simulate_work"):
+        return "work"
+    return config.get("mode", "immediate")
 
 
 def _should_fire_now(config: dict, tz, last_fired_date: Optional[datetime.date]) -> bool:
+    """
+    Decide whether to start a consumption session right now.
+
+    work      — fire whenever inside a work segment on weekdays.
+    immediate — fire immediately at startup (today) or at 00:00 each subsequent day.
+    spread    — fire periodically throughout the day; the session itself handles pacing.
+    """
     now = datetime.datetime.now(tz)
     today = now.date()
-    if config.get("simulate_work"):
+    mode = _mode(config)
+
+    if mode == "work":
         if last_fired_date == today:
             return False
         work_start = _parse_hhmm(config["work_start"])
         work_end   = _parse_hhmm(config["work_end"])
         segments   = _work_segments(work_start, work_end)
         return _current_segment(now.time(), segments) is not None and now.weekday() < 5
-    else:
-        fire_time = _random_fire_time(tz)
-        fire_dt = datetime.datetime.combine(today, fire_time, tzinfo=tz)
-        diff = abs((now - fire_dt).total_seconds())
-        return diff < 60 and last_fired_date != today
+
+    elif mode == "immediate":
+        # Today: fire right away (last_fired_date is None or a past date).
+        # Subsequent days: fire as soon as midnight passes (00:00–00:01 window).
+        if last_fired_date != today:
+            if last_fired_date is None:
+                return True  # first ever start — fire immediately
+            # New day: fire within the first minute after midnight
+            return now.hour == 0 and now.minute == 0
+        return False
+
+    else:  # spread
+        # Spread fires one mini-session per "slot" throughout the day.
+        # We divide the day into slots of ~30 min; fire once per slot.
+        if last_fired_date != today:
+            return True  # first session of the day — start now
+        # After first session, the session loop itself handles pacing via sleep.
+        return False
 
 
 def _run_session_with_state(config: dict, config_path: str, ds: DashState) -> None:
@@ -223,22 +238,25 @@ def _run_session_with_state(config: dict, config_path: str, ds: DashState) -> No
     state = st.load(config_path)
     token_field = config.get("token_field") or None
     model = config.get("model") or get_default_model(config.get("platform", "openai"))
-
     wt = random.randint(config["weekly_min"], config["weekly_max"])
+    mode = _mode(config)
 
-    if config.get("simulate_work"):
+    if mode == "work":
         _work_session(config, config_path, tz, state, token_field, model, wt, ds)
-    else:
-        _random_session(config, config_path, tz, state, token_field, model, wt, ds)
+    elif mode == "immediate":
+        _immediate_session(config, config_path, tz, state, token_field, model, wt, ds)
+    else:  # spread
+        _spread_session(config, config_path, tz, state, token_field, model, wt, ds)
 
 
-def _random_session(config, config_path, tz, state, token_field, model, weekly_target, ds: DashState):
+def _immediate_session(config, config_path, tz, state, token_field, model, weekly_target, ds: DashState):
+    """Consume the full daily budget as fast as possible (short sleeps)."""
     import random as _r
     daily_tgt = _daily_target(weekly_target, 7)
     today = st.today_consumed(state, tz)
     remaining = daily_tgt - today
 
-    ds.log(f"[Random] daily_target={daily_tgt:,}  consumed={today:,}  remaining={remaining:,}")
+    ds.log(f"[Immediate] daily_target={daily_tgt:,}  consumed={today:,}  remaining={remaining:,}")
     if remaining <= 0:
         ds.log("Daily target reached — skipping.")
         return
@@ -270,9 +288,80 @@ def _random_session(config, config_path, tz, state, token_field, model, weekly_t
                 ds.session_tokens = total
             ds.log(f"  +{tokens:,} tk  [{prompt[:50]}…]  total={total:,}/{remaining:,}")
         if total < remaining and not ds.stop_event.is_set():
-            sleep = _r.randint(10, 60)
-            ds.log(f"  Sleeping {sleep}s…")
+            sleep = _r.randint(2, 8)  # short sleep — immediate mode
             ds.stop_event.wait(sleep)
+
+    with ds._lock:
+        ds.session_active = False
+    ds.log(f"Session done. +{total:,} tokens.")
+
+
+def _spread_session(config, config_path, tz, state, token_field, model, weekly_target, ds: DashState):
+    """
+    Consume the daily budget evenly across the remaining hours of the day.
+    Calculates inter-call sleep dynamically so all tokens are consumed by midnight.
+    """
+    import random as _r
+    daily_tgt = _daily_target(weekly_target, 7)
+    today_consumed = st.today_consumed(state, tz)
+    remaining = daily_tgt - today_consumed
+
+    now = datetime.datetime.now(tz)
+    midnight = (now + datetime.timedelta(days=1)).replace(
+        hour=0, minute=0, second=0, microsecond=0
+    )
+    secs_left = max((midnight - now).total_seconds(), 60)
+
+    ds.log(
+        f"[Spread] daily_target={daily_tgt:,}  consumed={today_consumed:,}  "
+        f"remaining={remaining:,}  time_left={secs_left/3600:.1f}h"
+    )
+    if remaining <= 0:
+        ds.log("Daily target reached — skipping.")
+        return
+
+    # Estimate inter-call sleep: spread remaining calls evenly over remaining time
+    est_tokens_per_call = 400
+    n_calls = max(remaining // est_tokens_per_call, 1)
+    sleep_between = max(int(secs_left / n_calls), 5)
+    ds.log(f"  ~{n_calls} calls planned, ~{sleep_between}s apart")
+
+    with ds._lock:
+        ds.session_active = True
+        ds.session_tokens = 0
+        ds.session_target = remaining
+
+    client = _build_client(config)
+    prompts = RANDOM_PROMPTS.copy()
+    _r.shuffle(prompts)
+    pool = prompts * ((remaining // 200) + 5)
+
+    total = 0
+    for prompt in pool:
+        if ds.stop_event.is_set():
+            break
+        if total >= remaining:
+            break
+        with ds._lock:
+            ds.last_prompt = prompt[:80]
+        tokens = _call_api(client, model, prompt, token_field)
+        if tokens:
+            total += tokens
+            st.record(config_path, state, tokens, tz)
+            ds.refresh_consumption()
+            with ds._lock:
+                ds.session_tokens = total
+            ds.log(f"  +{tokens:,} tk  [{prompt[:50]}…]  total={total:,}/{remaining:,}")
+            # Recalculate sleep dynamically
+            remaining_tokens = remaining - total
+            if remaining_tokens > 0:
+                now2 = datetime.datetime.now(tz)
+                secs_left2 = max((midnight - now2).total_seconds(), 5)
+                calls_left = max(remaining_tokens // max(tokens, 1), 1)
+                sleep_between = max(int(secs_left2 / calls_left), 5)
+        if total < remaining and not ds.stop_event.is_set():
+            ds.log(f"  Sleeping {sleep_between}s…")
+            ds.stop_event.wait(sleep_between)
 
     with ds._lock:
         ds.session_active = False
@@ -357,7 +446,8 @@ def _daemon_thread(ds: DashState) -> None:
     last_fired_date: Optional[datetime.date] = None
 
     ds.log("Daemon started.")
-    mode = "Work-Simulation" if config.get("simulate_work") else "Random"
+    mode_map = {"work": "Work-Simulation", "immediate": "Immediate", "spread": "Spread"}
+    mode = mode_map.get(_mode(config), _mode(config))
     ds.log(f"Mode: {mode}")
 
     while not ds.stop_event.is_set():
@@ -403,7 +493,8 @@ def _build_dashboard(snap: dict, config: dict, elapsed: str) -> "Table":
     platform = PLATFORM_DISPLAY_NAMES.get(
         config.get("platform", "custom").lower(), config.get("platform", "custom")
     )
-    mode = "Work-Simulation" if config.get("simulate_work") else "Random"
+    _mode_map = {"work": "Work-Simulation", "immediate": "Immediate (ASAP)", "spread": "Spread (even)"}
+    mode = _mode_map.get(_mode(config), _mode(config))
 
     today     = snap["today"]
     daily_tgt = max(snap["daily_target"], 1)
@@ -577,7 +668,8 @@ def _bg_daemon_loop(config: dict, config_path: str) -> None:
 
     _log("=" * 60)
     _log("TrustMeImWorking background daemon started.")
-    mode = "Work-Simulation" if config.get("simulate_work") else "Random"
+    _mode_map = {"work": "Work-Simulation", "immediate": "Immediate (ASAP)", "spread": "Spread (even)"}
+    mode = _mode_map.get(_mode(config), _mode(config))
     _log(f"Mode: {mode}  |  Config: {config_path}")
     _log("=" * 60)
 
