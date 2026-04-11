@@ -100,6 +100,9 @@ def _section(title: str) -> None:
 
 # ── Main wizard ───────────────────────────────────────────────────────────────
 
+CONFIG_FILENAME = "config.json"
+
+
 def run_wizard() -> None:
     print("\n" + "─" * 60)
     print("  TrustMeImWorking — Interactive Setup Wizard")
@@ -107,11 +110,7 @@ def run_wizard() -> None:
     print("  Legend:  [required]  [optional]  [default=X]")
     print("─" * 60 + "\n")
 
-    output = _ask(
-        "Config file path",
-        default="config.json",
-        hint="Where to save the generated config file.",
-    )
+    output = CONFIG_FILENAME
 
     # ── Step 1: Platform ──────────────────────────────────────────────────────
     _section("Step 1: Platform")
@@ -411,7 +410,7 @@ def run_wizard() -> None:
     print_success(f"Config saved to: {output}")
     print("─" * 60)
     print("\nNext steps:")
-    print(f"  1. Dry-run test:   python tmw.py run --config {output} --dry-run")
-    print(f"  2. Run once:       python tmw.py run --config {output}")
-    print(f"  3. Auto-schedule:  python tmw.py scheduler --install --config {output}")
-    print(f"  4. Check status:   python tmw.py status --config {output}\n")
+    print("  1. Start daemon:   python tmw.py start")
+    print("  2. Check status:   python tmw.py status")
+    print("  3. View logs:      python tmw.py logs")
+    print("  4. Stop daemon:    python tmw.py stop\n")

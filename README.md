@@ -85,98 +85,52 @@ pip3 install -r requirements.txt
 
 ---
 
-## ⚡ 快速上手
+## ⚡ 快速上手（3 条命令搞定）
 
-### 方式一：向导 + 一键启动（推荐）
+```bash
+python tmw.py wizard   # 第一步：交互式配置，自动生成 config.json
+python tmw.py start    # 第二步：启动后台常驻进程，开始自动消耗
+python tmw.py status   # 随时查看消耗统计
+```
 
-**第一步：运行向导，生成配置文件**
+> Mac/Linux 上如果 `python` 不可用，把所有 `python` 换成 `python3` 即可。
+
+---
+
+### 详细说明
+
+**第一步：运行向导**
 
 ```bash
 python tmw.py wizard
-# 或者（Mac/Linux 有时需要）
-python3 tmw.py wizard
 ```
 
-它会一步一步问你：用哪个平台、API Key 是多少、每周要消耗多少 tokens……  
-跟着填就行，最后自动生成配置文件（默认 `config.json`）。
+向导会一步一步问你：平台、API Key、每周消耗目标、工作时间……  
+全部填完后自动生成 `config.json`（固定文件名，无需手动指定）。
 
 **第二步：启动后台常驻进程**
 
 ```bash
-python tmw.py start --config config.json
+python tmw.py start
 ```
 
-就这一条命令。它会：
+启动后它会在后台静默运行，自动按配置判断是否消耗：
 
-- 在后台静默运行，不占用终端
-- 按你的配置自动判断当前是否应该消耗（工作时间内才消耗，周末不消耗，已达标不再消耗）
-- 所有运行日志自动写入 `config.log`
+- 工作时间内才消耗（Work-Sim 模式），周末不消耗
+- 今日已达标则停止，明天自动重置
+- 所有日志写入 `config.log`
 
-**第三步：查看运行状态**
+**第三步：查看状态 / 日志 / 停止**
 
 ```bash
-# 查看消耗统计 + daemon 是否在跑
-python tmw.py status --config config.json
-
-# 实时查看日志
-python tmw.py logs --config config.json
-python tmw.py logs --config config.json --lines 100  # 显示最近 100 行
+python tmw.py status          # 消耗统计 + daemon 是否在跑
+python tmw.py logs            # 查看最近 50 行日志
+python tmw.py logs -n 200     # 查看最近 200 行
+python tmw.py stop            # 停止 daemon
 ```
 
-**第四步：停止**
-
-```bash
-python tmw.py stop --config config.json
-```
-
----
-
-### 方式二：手动配置（老手）
-
-**第一步：生成配置模板**
-
-```bash
-# 随机模式
-python tmw.py init --config my_config.json --mode random
-
-# 模拟工作模式
-python tmw.py init --config my_config.json --mode work
-```
-
-**第二步：编辑配置文件**
-
-用任意文本编辑器打开 `my_config.json`，填入你的信息：
-
-```jsonc
-{
-  "platform":   "deepseek",     // 平台名，见下方支持列表
-  "api_key":    "sk-xxxxxxxx",  // 你的 API Key（必填）
-  "model":      null,           // 留 null 自动使用平台最新旗舰模型（token 消耗最大）
-  "weekly_min": 50000,          // 每周消耗下限（tokens）
-  "weekly_max": 80000,          // 每周消耗上限（tokens）
-  "simulate_work": true,        // true=模拟工作，false=随机模式
-
-  // 模拟工作模式才需要填以下字段：
-  "job_description": "产品经理，负责需求分析和竞品调研",
-  "work_start": "09:30",
-  "work_end":   "18:30",
-  "timezone":   "Asia/Shanghai"
-}
-```
-
-**第三步：先 dry-run 测试一下**
-
-```bash
-python tmw.py run --config my_config.json --dry-run
-```
-
-**第四步：启动常驻进程**
-
-```bash
-python tmw.py start --config my_config.json
-```
-
-> **提示：** 如果你的电脑只有 `python3` 命令，把所有 `python tmw.py` 替换成 `python3 tmw.py` 即可。
+所有命令默认读取当前目录的 `config.json`，无需每次加 `--config`。  
+如果你有多个配置文件，可以用 `--config other.json` 显式指定。
 ---
 
 ## 🔑 去哪里获取 API Key？
@@ -399,7 +353,7 @@ python tmw.py wizard                                         # Interactive setup
 python tmw.py init --config config.json --mode work          # Generate config template
 python tmw.py run  --config config.json --dry-run            # Test (no API calls)
 python tmw.py scheduler --install --config config.json       # Install auto-scheduler
-python tmw.py status --config config.json                    # Check stats
+python tmw.py status                    # Check stats
 ```
 
 ### Config File

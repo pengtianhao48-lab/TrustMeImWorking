@@ -3,17 +3,15 @@
 TrustMeImWorking — CLI entry point.
 
 Usage:
-  tmw wizard                                   # interactive setup
-  tmw start  --config PATH [--foreground]      # start persistent daemon
-  tmw stop   --config PATH                     # stop daemon
-  tmw logs   --config PATH [--lines N]         # tail daemon log
-  tmw run    --config PATH [--dry-run]         # single run (manual)
-  tmw status --config PATH                     # consumption stats
-  tmw init   [--config PATH] [--mode MODE]     # generate config template
-  tmw scheduler --install   --config PATH      # install crontab
-  tmw scheduler --uninstall --config PATH
-  tmw scheduler --status    [--config PATH]
-  tmw platforms                                # list supported platforms
+  tmw wizard                          # interactive setup → writes config.json
+  tmw start    [--config PATH]        # start persistent daemon
+  tmw stop     [--config PATH]        # stop daemon
+  tmw logs     [--config PATH] [-n N] # tail daemon log
+  tmw status   [--config PATH]        # consumption stats
+  tmw run      [--config PATH] [--dry-run]  # single manual run
+  tmw init     [--config PATH] [--mode MODE]
+  tmw scheduler --install|--uninstall|--status [--config PATH]
+  tmw platforms
 """
 from __future__ import annotations
 
@@ -21,10 +19,8 @@ import argparse
 import sys
 from pathlib import Path
 
-# Ensure package is importable when run directly
 sys.path.insert(0, str(Path(__file__).parent))
 
-# Python 3.9+ has zoneinfo in stdlib; 3.8 needs backports.zoneinfo
 try:
     import zoneinfo
 except ImportError:
@@ -41,27 +37,36 @@ from trustmework import engine
 from trustmework import scheduler as sched
 from trustmework.platforms import PLATFORM_DISPLAY_NAMES, list_platforms
 
+DEFAULT_CONFIG = "config.json"
+
+
+# ── Helpers ───────────────────────────────────────────────────────────────────
+
+def _load_config(path: str):
+    try:
+        return cfg_mod.load(path)
+    except (FileNotFoundError, ValueError) as exc:
+        print_error(str(exc))
+        if path == DEFAULT_CONFIG:
+            print_info("Tip: run 'tmw wizard' first to create config.json")
+        sys.exit(1)
+
 
 # ── Command handlers ──────────────────────────────────────────────────────────
 
 def cmd_init(args):
-    path = args.config or "config.json"
+    path = args.config
     cfg_mod.generate_template(path, mode=args.mode)
     print_success(f"Config template written to: {path}")
-    print_info("Edit the file, then run:  tmw start --config " + path)
+    print_info("Edit the file, then run:  tmw start")
 
 
 def cmd_start(args):
     print_banner()
-    try:
-        config = cfg_mod.load(args.config)
-    except (FileNotFoundError, ValueError) as exc:
-        print_error(str(exc))
-        sys.exit(1)
+    config = _load_config(args.config)
 
-    # os.fork() is not available on Windows
     if sys.platform == "win32" and not args.foreground:
-        print_info("Background daemon is not supported on Windows. Running in foreground mode.")
+        print_info("Background daemon not supported on Windows — running in foreground.")
         args.foreground = True
 
     from trustmework import daemon
@@ -80,12 +85,7 @@ def cmd_logs(args):
 
 def cmd_run(args):
     print_banner()
-    try:
-        config = cfg_mod.load(args.config)
-    except (FileNotFoundError, ValueError) as exc:
-        print_error(str(exc))
-        sys.exit(1)
-
+    config = _load_config(args.config)
     if config.get("simulate_work"):
         engine.run_work_mode(config, args.config, dry_run=args.dry_run)
     else:
@@ -94,11 +94,7 @@ def cmd_run(args):
 
 def cmd_status(args):
     print_banner()
-    try:
-        config = cfg_mod.load(args.config)
-    except (FileNotFoundError, ValueError) as exc:
-        print_error(str(exc))
-        sys.exit(1)
+    config = _load_config(args.config)
 
     import datetime
     tz_name = config.get("timezone", "")
@@ -127,7 +123,6 @@ def cmd_status(args):
     )
     mode = "Work-Simulation" if config.get("simulate_work") else "Random"
 
-    # Show daemon status alongside consumption stats
     from trustmework import daemon as _daemon
     config_abs = str(Path(args.config).resolve())
     if _daemon._is_running(config_abs):
@@ -155,22 +150,15 @@ def cmd_scheduler(args):
         sys.exit(1)
 
     if args.install:
-        try:
-            config = cfg_mod.load(args.config)
-        except (FileNotFoundError, ValueError) as exc:
-            print_error(str(exc))
-            sys.exit(1)
+        config = _load_config(args.config)
         sched.install(args.config, config)
-
     elif args.uninstall:
         sched.uninstall(args.config)
-
     else:
         sched.status(args.config)
 
 
 def cmd_wizard(args):
-    """Interactive setup wizard."""
     print_banner()
     try:
         from trustmework.wizard import run_wizard
@@ -197,18 +185,17 @@ def build_parser() -> argparse.ArgumentParser:
         prog="tmw",
         description="TrustMeImWorking — Simulate API token usage to hit your KPI.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="""
-Quick start:
-  1. tmw wizard                              # interactive setup
-  2. tmw start --config config.json         # start background daemon
-  3. tmw status --config config.json        # check progress
-  4. tmw stop  --config config.json         # stop daemon
+        epilog=f"""
+Quick start (3 commands):
+  tmw wizard      # one-time setup, writes {DEFAULT_CONFIG}
+  tmw start       # start background daemon
+  tmw status      # check progress
 
-Manual / advanced:
-  tmw run    --config config.json --dry-run
-  tmw logs   --config config.json --lines 100
-  tmw init   --config config.json --mode work
-  tmw scheduler --install --config config.json
+Other commands (all use {DEFAULT_CONFIG} by default):
+  tmw stop
+  tmw logs        [-n 100]
+  tmw run         [--dry-run]
+  tmw init        [--mode random|work|gateway|proxy]
   tmw platforms
         """,
     )
@@ -216,50 +203,60 @@ Manual / advanced:
 
     sub = parser.add_subparsers(dest="command", metavar="COMMAND")
 
+    def _cfg(p, required=False):
+        """Add --config / -c argument (optional, default=config.json)."""
+        p.add_argument(
+            "--config", "-c",
+            default=DEFAULT_CONFIG,
+            metavar="PATH",
+            help=f"Config file path (default: {DEFAULT_CONFIG})",
+        )
+
     # wizard
-    sub.add_parser("wizard", help="Interactive setup wizard (recommended first step)")
+    sub.add_parser("wizard", help=f"Interactive setup wizard — writes {DEFAULT_CONFIG}")
 
     # start
     p_start = sub.add_parser(
         "start",
-        help="Start persistent daemon — runs forever, auto-consumes tokens per schedule",
+        help="Start persistent daemon (auto-consumes tokens per schedule)",
     )
-    p_start.add_argument("--config", "-c", required=True, metavar="PATH",
-                         help="Path to config file (created by 'tmw wizard')")
+    _cfg(p_start)
     p_start.add_argument("--foreground", "-f", action="store_true",
-                         help="Run in foreground instead of background (useful for debugging)")
+                         help="Run in foreground instead of background")
 
     # stop
     p_stop = sub.add_parser("stop", help="Stop the running daemon")
-    p_stop.add_argument("--config", "-c", required=True, metavar="PATH")
+    _cfg(p_stop)
 
     # logs
     p_logs = sub.add_parser("logs", help="Tail the daemon log file")
-    p_logs.add_argument("--config", "-c", required=True, metavar="PATH")
+    _cfg(p_logs)
     p_logs.add_argument("--lines", "-n", type=int, default=50, metavar="N",
                         help="Number of lines to show (default: 50)")
 
     # status
-    p_status = sub.add_parser("status", help="Show consumption statistics + daemon status")
-    p_status.add_argument("--config", "-c", required=True, metavar="PATH")
+    p_status = sub.add_parser("status", help="Show consumption stats + daemon status")
+    _cfg(p_status)
 
-    # run (manual single-shot)
+    # run
     p_run = sub.add_parser("run", help="Run a single consumption session (manual)")
-    p_run.add_argument("--config", "-c", required=True, metavar="PATH")
-    p_run.add_argument("--dry-run", action="store_true", help="Simulate without calling the API")
+    _cfg(p_run)
+    p_run.add_argument("--dry-run", action="store_true",
+                       help="Simulate without calling the API")
 
     # init
     p_init = sub.add_parser("init", help="Generate a config file template")
-    p_init.add_argument("--config", "-c", default="config.json", metavar="PATH")
-    p_init.add_argument("--mode", choices=["random", "work", "gateway", "proxy"], default="random",
-                        help="Template mode: random, work, gateway, proxy")
+    _cfg(p_init)
+    p_init.add_argument("--mode", choices=["random", "work", "gateway", "proxy"],
+                        default="random",
+                        help="Template mode (default: random)")
 
-    # scheduler (legacy crontab method)
-    p_sched = sub.add_parser("scheduler", help="Manage crontab-based scheduling (legacy)")
+    # scheduler (legacy)
+    p_sched = sub.add_parser("scheduler", help="Manage crontab scheduling (legacy)")
     p_sched.add_argument("--install",   action="store_true")
     p_sched.add_argument("--uninstall", action="store_true")
     p_sched.add_argument("--status",    action="store_true")
-    p_sched.add_argument("--config", "-c", metavar="PATH")
+    p_sched.add_argument("--config", "-c", default=DEFAULT_CONFIG, metavar="PATH")
 
     # platforms
     sub.add_parser("platforms", help="List all supported platforms")
