@@ -281,9 +281,8 @@ Is this a race condition? How do I make this thread-safe?
 
 ## 🌐 支持的平台
 
-```b```bash
+```bash
 python tmw.py platforms   # or: python3 tmw.py platforms
-```
 ```
 
 | 平台 Key | 服务 | 平台 Key | 服务 |
