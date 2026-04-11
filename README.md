@@ -51,14 +51,18 @@
 
 ### 第一步：确认你有 Python
 
-打开终端（Windows 用 PowerShell 或 CMD，Mac/Linux 用 Terminal），输入：
+打开终端（Windows 用 PowerShell 或 CMD，Mac/Linux 用 Terminal），依次尝试以下命令，哪个有输出用哪个：
 
 ```bash
 python --version
+# 或者
+python3 --version
 ```
 
-如果显示 `Python 3.10.x` 或更高版本，继续下一步。  
-如果提示"找不到命令"，先去 [python.org](https://www.python.org/downloads/) 下载安装 Python（安装时勾选 **Add to PATH**）。
+如果任意一条显示 `Python 3.10.x` 或更高版本，继续下一步。  
+如果两条都提示"找不到命令"，先去 [python.org](https://www.python.org/downloads/) 下载安装 Python（安装时勾选 **Add to PATH**）。
+
+> **记住你用的是 `python` 还是 `python3`**，后续所有命令都用同一个。
 
 ### 第二步：下载项目
 
@@ -73,6 +77,8 @@ cd TrustMeImWorking
 
 ```bash
 pip install -r requirements.txt
+# 如果上面报错，试这个：
+pip3 install -r requirements.txt
 ```
 
 看到一堆 `Successfully installed ...` 就说明成功了。
@@ -85,6 +91,8 @@ pip install -r requirements.txt
 
 ```bash
 python tmw.py wizard
+# 或者（Mac/Linux 有时需要）
+python3 tmw.py wizard
 ```
 
 它会一步一步问你：用哪个平台、API Key 是多少、每周要消耗多少 tokens……  
@@ -100,6 +108,8 @@ python tmw.py init --config my_config.json --mode random
 
 # 模拟工作模式
 python tmw.py init --config my_config.json --mode work
+
+# Mac/Linux 如果 python 不可用，把上面所有 python 换成 python3
 ```
 
 **第二步：编辑配置文件**
@@ -136,12 +146,16 @@ python tmw.py run --config my_config.json --dry-run
 python tmw.py run --config my_config.json
 ```
 
+> **提示：** 如果你的电脑只有 `python3` 命令，把所有 `python tmw.py` 替换成 `python3 tmw.py` 即可，功能完全一样。
+
 **第四步：设置自动运行（最重要！）**
 
 手动跑一次没意义，要让它每天自动跑才行：
 
 ```bash
 python tmw.py scheduler --install --config my_config.json
+# 或
+python3 tmw.py scheduler --install --config my_config.json
 ```
 
 这会自动设置定时任务，每 30 分钟检查一次，在合适的时间自动消耗 tokens。  
@@ -226,8 +240,9 @@ python tmw.py status --config my_config.json
 
 ## 🌐 支持的平台
 
-```bash
-python tmw.py platforms  # 查看完整列表
+```b```bash
+python tmw.py platforms   # or: python3 tmw.py platforms
+```
 ```
 
 | 平台 Key | 服务 | 平台 Key | 服务 |
@@ -248,6 +263,7 @@ python tmw.py platforms  # 查看完整列表
 ## 📊 命令速查
 
 ```bash
+# 如果你的系统只有 python3，把下面所有 python 替换成 python3
 python tmw.py wizard                                    # 交互式配置向导
 python tmw.py init   --config cfg.json --mode work     # 生成配置模板
 python tmw.py run    --config cfg.json                 # 运行一次
@@ -322,26 +338,18 @@ Many companies measure employee productivity by **API token consumption**. Trust
 # Requires Python 3.10+
 git clone https://github.com/pengtianhao48-lab/TrustMeImWorking.git
 cd TrustMeImWorking
-pip install -r requirements.txt
+pip install -r requirements.txt   # or: pip3 install -r requirements.txt
 ```
 
 ### Quick Start
 
 ```bash
-# Interactive setup wizard (recommended for beginners)
-python tmw.py wizard
-
-# OR: generate a config template
-python tmw.py init --config config.json --mode work
-
-# Test without making real API calls
-python tmw.py run --config config.json --dry-run
-
-# Install auto-scheduler (runs every 30 min, checks if it should consume)
-python tmw.py scheduler --install --config config.json
-
-# Check your stats
-python tmw.py status --config config.json
+# If only python3 is available on your system, replace python with python3
+python tmw.py wizard                                         # Interactive setup wizard
+python tmw.py init --config config.json --mode work          # Generate config template
+python tmw.py run  --config config.json --dry-run            # Test (no API calls)
+python tmw.py scheduler --install --config config.json       # Install auto-scheduler
+python tmw.py status --config config.json                    # Check stats
 ```
 
 ### Config File
