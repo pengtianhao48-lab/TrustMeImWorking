@@ -1,0 +1,13 @@
+# ClawHub publish ignore
+config.json
+config.log
+config.pid
+*.pyc
+__pycache__/
+.pytest_cache/
+.git/
+tests/
+.github/
+*.egg-info/
+dist/
+build/
